@@ -1,0 +1,8 @@
+# Generated sources are an implementation detail; the app uses a narrow adapter around them.
+projectName: GotifyGeneratedClient
+moduleName: GotifyGeneratedClient
+library: alamofire
+responseAs: AsyncAwait
+useSPMFileStructure: true
+# swift6 emits podLicense as a Ruby expression; keep the inner quotes to avoid a bare MIT constant.
+podLicense: "'MIT'"

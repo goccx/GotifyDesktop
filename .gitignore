@@ -1,0 +1,14 @@
+# SwiftPM build products and local package metadata.
+.build/
+.swiftpm/
+.DS_Store
+
+# Actual local server credentials; retain the anonymous configuration template.
+.env
+.env.*
+!.env.example
+
+# Only our local development documents and design images are excluded.
+/docs
+
+AGENTS.md
