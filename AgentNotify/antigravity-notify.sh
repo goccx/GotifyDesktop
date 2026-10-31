@@ -17,6 +17,10 @@ GOTIFY_TOKEN="${GOTIFY_TOKEN:-YOUR_APPLICATION_TOKEN}"
 
 # 3. Message Priority (integer 0-10, default 5) / 消息优先级（0~10 的整数，默认 5）
 GOTIFY_PRIORITY="${GOTIFY_PRIORITY:-5}"
+
+# 4. Retry Configuration (default 3 attempts, 2s interval) / 重试配置（默认最多尝试 3 次，间隔 2 秒）
+GOTIFY_MAX_RETRIES="${GOTIFY_MAX_RETRIES:-3}"
+GOTIFY_RETRY_DELAY="${GOTIFY_RETRY_DELAY:-2}"
 # ============================================================================
 
 shell_folder="$(cd "$(dirname "$0")" && pwd)"
@@ -33,7 +37,33 @@ exec >> "$log_file" 2>&1
 log() {
     local level="$1"
     shift
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $*"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] [pid:$$] $*"
+}
+
+send_gotify() {
+    local attempt=1
+    local err_msg=""
+    while (( attempt <= GOTIFY_MAX_RETRIES )); do
+        if err_msg="$(curl -fsS --connect-timeout 5 --max-time 10 \
+            -X POST "${GOTIFY_URL%/}/message" \
+            -H "X-Gotify-Key: ${GOTIFY_TOKEN}" \
+            -F "title=${title}" \
+            -F "message=${message}" \
+            -F "priority=${GOTIFY_PRIORITY}" 2>&1 >/dev/null)"; then
+            log "INFO" "Notification sent successfully (attempt ${attempt}/${GOTIFY_MAX_RETRIES})"
+            return 0
+        fi
+
+        err_msg="${err_msg//$'\n'/ }"
+        if (( attempt < GOTIFY_MAX_RETRIES )); then
+            log "WARN" "Send failed (attempt ${attempt}/${GOTIFY_MAX_RETRIES}): ${err_msg}. Retrying in ${GOTIFY_RETRY_DELAY}s..."
+            sleep "$GOTIFY_RETRY_DELAY"
+        else
+            log "ERROR" "Send failed after ${GOTIFY_MAX_RETRIES} attempts: ${err_msg}"
+        fi
+        (( attempt++ ))
+    done
+    return 1
 }
 
 input_json="$(cat)"
@@ -60,14 +90,6 @@ else
 fi
 
 log "INFO" "Sending Antigravity notification: title=${title}"
-
-curl -sS --connect-timeout 5 --max-time 10 \
-    -X POST "${GOTIFY_URL%/}/message" \
-    -H "X-Gotify-Key: ${GOTIFY_TOKEN}" \
-    -F "title=${title}" \
-    -F "message=${message}" \
-    -F "priority=${GOTIFY_PRIORITY}" >/dev/null || log "ERROR" "Gotify push failed"
-
-log "INFO" "Notification finished"
+send_gotify || true
 
 echo '{"decision": "stop"}' >&3
