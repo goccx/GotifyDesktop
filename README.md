@@ -1,7 +1,7 @@
 # Gotify Desktop (GotifyDesktop)
 
 [![Release](https://img.shields.io/github/v/release/goccx/GotifyDesktop?label=Release)](https://github.com/goccx/GotifyDesktop/releases/latest)
-[![Platform](https://img.shields.io/badge/Platform-macOS%2014%2B%20(Apple%20Silicon%20%26%20Intel)-blue)](https://github.com/goccx/GotifyDesktop/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-macOS%2012%2B%20(Apple%20Silicon%20%26%20Intel)-blue)](https://github.com/goccx/GotifyDesktop/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 English | [简体中文](README.zh-CN.md)
@@ -16,7 +16,7 @@ Gotify Desktop focuses on lightweight, real-time notification reading: messages 
 
 ### Supported Platforms & Downloads
 
-Requires **macOS 14.0 (Sonoma)** or later. Choose the installer matching your Mac processor:
+Requires **macOS 12.0 (Monterey)** or later. Choose the installer matching your Mac processor:
 
 | Architecture | Devices | Download |
 | :--- | :--- | :--- |
@@ -50,7 +50,7 @@ Before using GotifyDesktop, you need a running Gotify server. If you do not have
 
 ## Build from Source
 
-Requirements: macOS 14 or later, Swift 6.1 or later, and Apple's Xcode Command Line Tools.
+Requirements: macOS 12 or later, Swift 6.1 or later, and Apple's Xcode Command Line Tools.
 
 ```sh
 make build    # Build and assemble debug GotifyDesktop.app

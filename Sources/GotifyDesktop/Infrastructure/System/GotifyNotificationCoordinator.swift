@@ -112,7 +112,7 @@ final class GotifyNotificationCoordinator: NSObject, ObservableObject, GotifyMes
         didActivate notification: NSUserNotification
     ) {
         Task { @MainActor in
-            NSApp.activate(ignoringOtherApps: true)
+            AppWindowCoordinator.shared.openMainWindow()
         }
     }
 }

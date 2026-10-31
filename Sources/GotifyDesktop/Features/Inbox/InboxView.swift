@@ -18,7 +18,7 @@ struct InboxView: View {
         // Async callbacks keep the page that rendered them; a later selection cannot retarget
         // an old footer or disappearance callback to another application.
         let page = selectedPage
-        NavigationSplitView {
+        NavigationView {
             SidebarView(
                 selection: $selection,
                 sources: sourceItems,
@@ -29,10 +29,10 @@ struct InboxView: View {
                     pendingBulkDeletePage = targetPage
                 }
             )
-                // A navigation column needs enough breathing room for real application names and
-                // the transient count. The bounded range keeps the reading canvas dominant.
-                .navigationSplitViewColumnWidth(min: 210, ideal: 232, max: 260)
-        } detail: {
+            // A navigation column needs enough breathing room for real application names and
+            // the transient count. The bounded range keeps the reading canvas dominant.
+            .frame(minWidth: 210, idealWidth: 232, maxWidth: 260)
+
             ReadingCanvas(
                 timelineItems: messageStore.timelineItems(for: page),
                 page: page,
@@ -56,7 +56,6 @@ struct InboxView: View {
                 requestBulkDelete: { pendingBulkDeletePage = page }
             )
         }
-        .navigationSplitViewStyle(.balanced)
         .confirmationDialog(
             Localized.string("message.delete.confirm.title"),
             isPresented: Binding(
@@ -110,7 +109,9 @@ struct InboxView: View {
             }
 
             ToolbarItem(placement: .primaryAction) {
-                SettingsLink {
+                Button {
+                    AppWindowCoordinator.shared.openSettingsWindow()
+                } label: {
                     Image(systemName: "gearshape")
                 }
                 .labelStyle(.iconOnly)
@@ -123,10 +124,10 @@ struct InboxView: View {
         .onAppear {
             ApplicationMenuLocalization.apply(appName: Localized.string("app.name"))
         }
-        .onChange(of: preferences.language) { _, _ in
+        .onChange(of: preferences.language) { _ in
             ApplicationMenuLocalization.apply(appName: Localized.string("app.name"))
         }
-        .onChange(of: selection) { _, _ in
+        .onChange(of: selection) { _ in
             loadSelectedPage()
         }
     }
@@ -289,7 +290,7 @@ private struct SidebarView: View {
         // SwiftUI does not expose NSTableView.selectionHighlightStyle. This mature adapter uses
         // public AppKit introspection only; native selection, scrolling, keyboard navigation, and
         // accessibility remain owned by the table view.
-        .introspect(.list(style: .sidebar), on: .macOS(.v14, .v15, .v26)) { tableView in
+        .introspect(.list(style: .sidebar), on: .macOS(.v12, .v13, .v14, .v15, .v26)) { tableView in
             tableView.selectionHighlightStyle = .none
             tableView.usesAlternatingRowBackgroundColors = false
         }
@@ -437,20 +438,20 @@ private struct ReadingCanvas: View {
                         .controlSize(.regular)
                 case .failed:
                     VStack(spacing: 16) {
-                        ContentUnavailableView(
-                            Localized.string("inbox.loadFailed.title"),
+                        EmptyStatePlaceholderView(
+                            title: Localized.string("inbox.loadFailed.title"),
                             systemImage: "exclamationmark.icloud",
-                            description: Text(Localized.string("inbox.loadFailed.description"))
+                            description: Localized.string("inbox.loadFailed.description")
                         )
                         Button(Localized.string("inbox.retry"), action: retryLoading)
                             .accessibilityIdentifier("retry-message-page-button")
                     }
                 case .idle, .loaded:
                     if timelineItems.isEmpty {
-                        ContentUnavailableView(
-                            Localized.string("inbox.empty.title"),
+                        EmptyStatePlaceholderView(
+                            title: Localized.string("inbox.empty.title"),
                             systemImage: "bell.badge",
-                            description: Text(Localized.string("inbox.empty.description"))
+                            description: Localized.string("inbox.empty.description")
                         )
                     } else {
                         MessageListView(
@@ -500,10 +501,10 @@ private struct ReadingCanvas: View {
             }
         }
         .navigationTitle(navigationTitle)
-        .onChange(of: page) { _, _ in
+        .onChange(of: page) { _ in
             selectedMessage = nil
         }
-        .onChange(of: timelineItems) { _, items in
+        .onChange(of: timelineItems) { items in
             guard let selectedMessage else { return }
             let stillPresent = items.contains { item in
                 if case let .message(message) = item {
@@ -573,12 +574,11 @@ private struct MessageListView: View {
                             NextMessagePageSentinel(isEnabled: isPresented, loadNextPage: loadNextPage)
                         }
                     }
-                    .listRowSeparator(.hidden)
                 }
                 .listStyle(.inset)
                 .accessibilityIdentifier("message-timeline-list")
                 // Explicit top-bar reveal keeps the newest arrival at the top of the feed visible.
-                .onChange(of: scrollAnchorID) { _, anchorID in
+                .onChange(of: scrollAnchorID) { anchorID in
                     guard let anchorID else { return }
                     if isPresented {
                         proxy.scrollTo(timelineItems.first?.id ?? "message-\(anchorID)", anchor: .top)
@@ -737,7 +737,7 @@ private struct MessageTimelineListRow: View {
                 }
                 .onAppear { setMessageVisibility(message.id, isPresented) }
                 .onDisappear { setMessageVisibility(message.id, false) }
-                .onChange(of: isPresented) { _, presented in setMessageVisibility(message.id, presented) }
+                .onChange(of: isPresented) { presented in setMessageVisibility(message.id, presented) }
             case let .gap(gap):
                 NextMessagePageSentinel(
                     isEnabled: isPresented,
@@ -844,7 +844,8 @@ private struct MessageRowContent: View, Equatable {
                     .foregroundStyle(.secondary)
                     // Reserve identical summary height for short and long messages to avoid
                     // variable-height remeasurement when the native list appends a page.
-                    .lineLimit(2, reservesSpace: true)
+                    .lineLimit(2)
+                    .frame(minHeight: 34, alignment: .topLeading)
                 Text("\(message.sourceName) · \(MessageAbsoluteTimeFormat.listTime(message.receivedAt, locale: locale))")
                     // A slightly larger native text style keeps the full timestamp readable.
                     .font(.callout)
@@ -965,5 +966,30 @@ private struct MessageDetailView: View {
             }
         }
         .accessibilityIdentifier("message-detail")
+    }
+}
+
+/// Unified empty/error placeholder matching native macOS empty-state typography across macOS 12+.
+private struct EmptyStatePlaceholderView: View {
+    let title: String
+    let systemImage: String
+    let description: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 40, weight: .regular))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.title2.weight(.semibold))
+                .multilineTextAlignment(.center)
+            Text(description)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

@@ -12,7 +12,7 @@ final class GotifySessionController {
         static let reconnectMaximumDelaySeconds: UInt64 = 20 * 60
         /// Bound main-actor UI invalidations during a busy stream without adding durable queues or timers.
         static let liveMessageBatchSize = 100
-        static let liveMessageBatchDelay: Duration = .milliseconds(100)
+        static let liveMessageBatchDelayNanoseconds: UInt64 = 100_000_000
     }
 
     /// The token exists only for this active in-memory session and is never copied into reconnect task storage.
@@ -47,7 +47,7 @@ final class GotifySessionController {
         let sessionID = session.id
         liveMessageBuffer = GotifyLiveMessageBuffer(
             batchSize: Configuration.liveMessageBatchSize,
-            flushDelay: Configuration.liveMessageBatchDelay
+            flushDelayNanoseconds: Configuration.liveMessageBatchDelayNanoseconds
         ) { [weak self] messages in
             await self?.receiveLiveMessageBatch(messages, for: sessionID)
         }
@@ -186,7 +186,7 @@ final class GotifySessionController {
         reconnectAttempt += 1
         reconnectTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(for: .seconds(delay))
+                try await Task.sleep(nanoseconds: delay * 1_000_000_000)
             } catch {
                 return
             }

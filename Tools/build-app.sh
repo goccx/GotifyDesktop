@@ -66,15 +66,15 @@ if [[ "$build_configuration" == "release" ]]; then
   mkdir -p "$release_dir"
 
   # 1. Apple Silicon (arm64)
-  swift build --build-path "$build_dir" -c release --triple arm64-apple-macosx14.0 --product GotifyDesktop >&2
-  arm64_bin_path="$(swift build --build-path "$build_dir" -c release --triple arm64-apple-macosx14.0 --show-bin-path)"
+  swift build --build-path "$build_dir" -c release --triple arm64-apple-macosx12.0 --product GotifyDesktop >&2
+  arm64_bin_path="$(swift build --build-path "$build_dir" -c release --triple arm64-apple-macosx12.0 --show-bin-path)"
   arm64_app_path="$(assemble_app_bundle "$arm64_bin_path" "true")"
   arm64_dmg_path="$release_dir/GotifyDesktop-macOS-arm64.dmg"
   package_dmg "$arm64_app_path" "$arm64_dmg_path"
 
   # 2. Intel (amd64 / x86_64)
-  swift build --build-path "$build_dir" -c release --triple x86_64-apple-macosx14.0 --product GotifyDesktop >&2
-  amd64_bin_path="$(swift build --build-path "$build_dir" -c release --triple x86_64-apple-macosx14.0 --show-bin-path)"
+  swift build --build-path "$build_dir" -c release --triple x86_64-apple-macosx12.0 --product GotifyDesktop >&2
+  amd64_bin_path="$(swift build --build-path "$build_dir" -c release --triple x86_64-apple-macosx12.0 --show-bin-path)"
   amd64_app_path="$(assemble_app_bundle "$amd64_bin_path" "true")"
   amd64_dmg_path="$release_dir/GotifyDesktop-macOS-amd64.dmg"
   package_dmg "$amd64_app_path" "$amd64_dmg_path"

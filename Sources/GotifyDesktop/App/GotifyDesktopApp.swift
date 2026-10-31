@@ -1,32 +1,56 @@
+import AppKit
 import Factory
 import SwiftUI
+
+@MainActor
+final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            AppWindowCoordinator.shared.openMainWindow()
+        }
+        return true
+    }
+}
 
 /// The application entry point keeps the menu-bar lifecycle independent of the main window.
 @main
 struct GotifyDesktopApp: App {
+    @NSApplicationDelegateAdaptor(GotifyAppDelegate.self) private var appDelegate
     /// Factory owns the process-wide in-memory session; quitting the app releases it.
     @StateObject private var messageStore: MessageStore
     /// Preferences are deliberately limited to non-message UI choices.
-    @StateObject private var preferences = AppPreferences()
+    @StateObject private var preferences: AppPreferences
     /// Notification choices are persistent UI preferences, never message data.
     @StateObject private var notificationPreferences: NotificationPreferences
     /// The coordinator bridges one in-memory live delivery to macOS presentation and audio.
     @StateObject private var notificationCoordinator: GotifyNotificationCoordinator
     /// Server configuration is separate from UI preferences because it owns connection lifecycle and token encryption.
     @StateObject private var serverPreferences: ServerPreferences
+    /// Native AppKit status item keeps menu-bar behavior identical from macOS 12 through macOS 15+.
+    @StateObject private var menuBarController: MenuBarStatusController
 
     init() {
         LegacyBundlePreferencesMigration.migrateIfNeeded()
         let store = Container.shared.messageStore()
+        let preferences = AppPreferences()
         let notificationPreferences = NotificationPreferences()
         let notificationCoordinator = GotifyNotificationCoordinator(preferences: notificationPreferences)
         let serverPreferences = ServerPreferences(
             sessionController: GotifySessionController(messageStore: store, notifier: notificationCoordinator)
         )
+        let menuBarController = MenuBarStatusController()
+        menuBarController.configure(messageStore: store, preferences: preferences)
+
         _messageStore = StateObject(wrappedValue: store)
+        _preferences = StateObject(wrappedValue: preferences)
         _notificationPreferences = StateObject(wrappedValue: notificationPreferences)
         _notificationCoordinator = StateObject(wrappedValue: notificationCoordinator)
         _serverPreferences = StateObject(wrappedValue: serverPreferences)
+        _menuBarController = StateObject(wrappedValue: menuBarController)
 
         // This process-level task restores a verified opt-in even when the main window remains closed.
         Task { @MainActor in
@@ -35,8 +59,10 @@ struct GotifyDesktopApp: App {
     }
 
     var body: some Scene {
-        Window(Localized.string("app.name"), id: "main") {
+        WindowGroup(Localized.string("app.name")) {
             InboxView()
+                .background(MainWindowAccessor())
+                .frame(minWidth: 900, idealWidth: 1_080, minHeight: 600, idealHeight: 720)
                 .environmentObject(messageStore)
                 .environmentObject(preferences)
                 .environmentObject(notificationPreferences)
@@ -44,28 +70,9 @@ struct GotifyDesktopApp: App {
                 .environmentObject(serverPreferences)
                 .environment(\.locale, preferences.language.locale)
         }
-        .defaultSize(width: 1_080, height: 720)
-
-        // This deliberately uses only native template content: count first, then the familiar macOS bell.
-        MenuBarExtra {
-            MenuBarContentView()
-                .environmentObject(messageStore)
-                .environmentObject(preferences)
-                .environmentObject(notificationPreferences)
-                .environment(\.locale, preferences.language.locale)
-        } label: {
-            HStack(spacing: 3) {
-                if messageStore.newMessageCount > 0 {
-                    Text(NewMessageCountFormat.display(messageStore.newMessageCount))
-                        .monospacedDigit()
-                }
-                Image(systemName: "bell")
-                    .symbolRenderingMode(.monochrome)
-            }
-            .accessibilityLabel(Localized.string("message.newMessagesAccessibility", messageStore.newMessageCount))
+        .commands {
+            CommandGroup(replacing: .newItem) {}
         }
-        // `.menu` gives the status item the same vertical menu structure as other macOS utilities.
-        .menuBarExtraStyle(.menu)
 
         Settings {
             SettingsView()
@@ -75,8 +82,5 @@ struct GotifyDesktopApp: App {
                 .environmentObject(notificationCoordinator)
                 .environment(\.locale, preferences.language.locale)
         }
-        // Settings has a deliberately compact, complete form; allowing an old saved window width
-        // to stretch it makes the native grouped layout visually sparse and harder to scan.
-        .windowResizability(.contentSize)
     }
 }

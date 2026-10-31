@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "GotifyDesktop",
     defaultLocalization: "en",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v12)],
     products: [
         .executable(name: "GotifyDesktop", targets: ["GotifyDesktop"]),
     ],

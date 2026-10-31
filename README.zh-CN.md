@@ -1,7 +1,7 @@
 # Gotify Desktop (GotifyDesktop)
 
 [![Release](https://img.shields.io/github/v/release/goccx/GotifyDesktop?label=Release)](https://github.com/goccx/GotifyDesktop/releases/latest)
-[![Platform](https://img.shields.io/badge/Platform-macOS%2014%2B%20(Apple%20Silicon%20%26%20Intel)-blue)](https://github.com/goccx/GotifyDesktop/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-macOS%2012%2B%20(Apple%20Silicon%20%26%20Intel)-blue)](https://github.com/goccx/GotifyDesktop/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 [English](README.md) | 简体中文
@@ -16,7 +16,7 @@ Gotify Desktop 专注于轻量化实时通知接收：消息属于你的 Gotify 
 
 ### 支持平台与安装包下载
 
-支持 **macOS 14.0 (Sonoma)** 及更高版本，请根据你的 Mac 芯片类型选择对应安装包：
+支持 **macOS 12.0 (Monterey)** 及更高版本，请根据你的 Mac 芯片类型选择对应安装包：
 
 | 平台架构 | 适用机型 | 下载链接 |
 | :--- | :--- | :--- |
@@ -50,7 +50,7 @@ Gotify Desktop 专注于轻量化实时通知接收：消息属于你的 Gotify 
 
 ## 从源码构建
 
-环境要求：macOS 14 或更高版本、Swift 6.1 或更高版本，以及 Xcode Command Line Tools。
+环境要求：macOS 12 或更高版本、Swift 6.1 或更高版本，以及 Xcode Command Line Tools。
 
 ```sh
 make build    # 编译并组装 Debug 版 GotifyDesktop.app

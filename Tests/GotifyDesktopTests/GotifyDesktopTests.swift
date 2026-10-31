@@ -423,7 +423,7 @@ struct GotifyDesktopTests {
         let config = GotifyGeneratedAPI.configuration(serverURL: serverURL, clientToken: "test-token")
         let response = try #require(
             HTTPURLResponse(
-                url: serverURL.appending(path: "message/42"),
+                url: serverURL.appendingPathComponent("message/42"),
                 statusCode: 200,
                 httpVersion: "HTTP/1.1",
                 headerFields: ["Content-Length": "0"]
