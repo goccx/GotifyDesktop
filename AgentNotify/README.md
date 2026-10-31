@@ -74,14 +74,16 @@ Call [`gotify-notify.sh`](./gotify-notify.sh) directly with `<title>` and `<mess
 Replace `/Users/your-username/.gotify/xxx-notify.sh` below with the actual absolute path on your machine.
 
 #### A. Antigravity
-Edit `~/.gemini/config/hooks.json` (supports both `Stop` completion notifications and `PreToolUse` approval alerts):
+> **Note**: Unlike Claude Code and Gemini CLI (which provide a dedicated `Notification` hook event for permission prompts), Antigravity currently does not pass approval-state metadata in its Hook `stdin` payload. Therefore, this script uses a **"high-risk command interception gate + default-allow external permission policy"** approach: configure Antigravity's external permission settings to default-allow (e.g., Turbo / Auto), and let `PreToolUse` intercept high-risk commands (returning `ask` to force an approval prompt while sending a Gotify alert) and interactive questions (`ask_question`), while `Stop` sends task completion notifications.
+
+Edit `~/.gemini/config/hooks.json` (supports both `Stop` completion notifications and `PreToolUse` high-risk command / question alerts):
 ```json
 {
   "gotify-notify": {
     "enabled": true,
     "PreToolUse": [
       {
-        "matcher": "run_command|read_file|write_file|edit_file|ask_question",
+        "matcher": "run_command|ask_question|ask_permission|ask_custom_permission",
         "hooks": [
           {
             "type": "command",
@@ -109,7 +111,7 @@ Edit `~/.claude/settings.json` (supports both `Stop` completion notifications an
   "hooks": {
     "Notification": [
       {
-        "matcher": "permission_prompt|idle_prompt",
+        "matcher": "permission_prompt|elicitation_dialog",
         "hooks": [
           {
             "type": "command",

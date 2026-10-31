@@ -74,14 +74,16 @@ realpath ~/.gotify/
 将下方配置中的 `/Users/你的用户名/.gotify/xxx-notify.sh` 替换为你本机的实际绝对路径。
 
 #### A. Antigravity（反重力）
-打开 `~/.gemini/config/hooks.json`（支持 `Stop` 任务完成通知与 `PreToolUse` 工具审批提醒）：
+> **说明**：不同于 Claude Code / Gemini CLI 拥有专门的 `Notification` 审批事件，Antigravity 目前无法从 Hook 传递的 `stdin` 信息中优雅判断某次工具调用是否触发了客户端内部审批。因此本脚本采用**“高危命令拦截触发审批通知 + 外部权限配置默认放行”**方案：建议在 Antigravity 设置中将日常权限设为默认放行（如 Turbo / Auto），由 `PreToolUse` 钩子专门拦截高危命令（返回 `ask` 强制弹窗并推送 Gotify 通知）及交互提问（`ask_question`），其余常规命令直接放行，配合 `Stop` 钩子推送任务完成通知。
+
+打开 `~/.gemini/config/hooks.json`（支持 `Stop` 任务完成通知与 `PreToolUse` 高危命令拦截/提问提醒）：
 ```json
 {
   "gotify-notify": {
     "enabled": true,
     "PreToolUse": [
       {
-        "matcher": "run_command|read_file|write_file|edit_file|ask_question",
+        "matcher": "run_command|ask_question|ask_permission|ask_custom_permission",
         "hooks": [
           {
             "type": "command",
@@ -109,7 +111,7 @@ realpath ~/.gotify/
   "hooks": {
     "Notification": [
       {
-        "matcher": "permission_prompt|idle_prompt",
+        "matcher": "permission_prompt|elicitation_dialog",
         "hooks": [
           {
             "type": "command",

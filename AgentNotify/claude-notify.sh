@@ -74,6 +74,14 @@ cwd="$(echo "$input_json" | jq -r '.cwd // empty')"
 project_name="${cwd:+$(basename "$cwd")}"
 
 if [[ "$event_name" == "Notification" ]]; then
+    notification_type="$(echo "$input_json" | jq -r '.notification_type // empty')"
+    # Only notify when Claude Code actually requests permission or user elicitation input
+    # (skip auth_success / idle_prompt).
+    if [[ -n "$notification_type" && "$notification_type" != "permission_prompt" && "$notification_type" != "elicitation_dialog" ]]; then
+        log "INFO" "Skipping non-approval Claude Code notification: notification_type=${notification_type}"
+        echo '{}' >&3
+        exit 0
+    fi
     title="${project_name:+[$project_name] }Approval Required"
     message="$(echo "$input_json" | jq -r '.message // "Waiting for your approval or input."')"
 else

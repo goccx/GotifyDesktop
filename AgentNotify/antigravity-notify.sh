@@ -66,6 +66,26 @@ send_gotify() {
     return 1
 }
 
+# Note: Antigravity currently cannot gracefully determine from Hook stdin payloads whether an action
+# triggered an internal approval prompt. Therefore, this script uses a high-risk command interception
+# gate (`is_high_risk_command` -> returns `ask` and sends a Gotify notification) while routine commands
+# return `allow` (pair with default-allow / Turbo mode in Antigravity's external permission settings).
+# 说明：Antigravity 目前无法从 Hook 传递的 stdin 信息中优雅判断是否需要审批，因此这里采用高危命令拦截方案
+# 触发审批通知（返回 ask 要求确认并推送通知），常规命令默认放行（建议外部权限配置设为默认放行）。
+is_high_risk_command() {
+    local normalized=" ${1//$'\n'/ } "
+    case "$normalized" in
+        *" sudo "*|*" rm -rf "*|*" rm -fr "*|*" mkfs"*|*" dd if="*|*" diskutil "*|\
+        *" shutdown "*|*" reboot "*|*" killall "*|*" pkill "*|*" kill -9 "*|\
+        *" chmod -R 777 "*|*" git push"*|*" git reset --hard"*|*" git clean -f"*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 extract_last_reply() {
     local transcript_path="$1"
     if [[ -z "$transcript_path" ]]; then
@@ -95,61 +115,51 @@ project_name="${workspace:+$(basename "$workspace")}"
 user_input="$(echo "$input_json" | jq -r '.lastUserInput // empty')"
 tool_name="$(echo "$input_json" | jq -r '.toolCall.name // empty')"
 
-# 1. PreToolUse (Approval / Tool Execution Gate) / 工具执行与审批事件
+# 1. PreToolUse (High-Risk Command Gate & Interactive Prompt Tools) / 高危命令拦截与交互提问通知
 if [[ -n "$tool_name" ]]; then
-    # Only notify when the tool call actually requires manual user approval:
-    # 1) `run_command` with `BypassSandbox: true` (sandboxed commands auto-run without prompting)
-    # 2) File tools (`Path` argument) targeting a path outside `workspacePaths`, `/tmp`, and `~/.gemini/antigravity`
-    # 3) `ask_question` (interactive user question)
-    requires_approval="$(echo "$input_json" | jq -r --arg home "$HOME" '
-        .workspacePaths as $ws
-        | if .toolCall.name == "run_command" then
-            (if .toolCall.args.BypassSandbox == true then "true" else "false" end)
-          elif .toolCall.name == "ask_question" then
-            "true"
-          elif (.toolCall.args.Path // "") != "" then
-            (.toolCall.args.Path) as $p
-            | if (
-                ($p | startswith("/tmp/")) or ($p == "/tmp") or
-                ($p | startswith($home + "/.gemini/antigravity/")) or
-                any($ws[]?; $p == . or ($p | startswith(. + "/")))
-              ) then "false" else "true" end
-          else
-            "false"
-          end
-    ' 2>/dev/null || echo "false")"
+    if [[ "$tool_name" == "run_command" ]]; then
+        cmd_line="$(echo "$input_json" | jq -r '.toolCall.args.CommandLine // empty')"
+        if [[ -n "$cmd_line" ]] && is_high_risk_command "$cmd_line"; then
+            title="${project_name:+[$project_name] }Approval Required: run_command"
+            message="Command: ${cmd_line}"
+            if [[ -n "$user_input" ]]; then
+                message="${message}"$'\n\n'"---"$'\n'"Prompt: ${user_input}"
+            fi
 
-    if [[ "$requires_approval" == "true" ]]; then
+            log "INFO" "High-risk command intercepted: title=${title}, cmd=${cmd_line}"
+            send_gotify || true
+
+            echo '{"decision": "ask", "reason": "High-risk command requires manual approval."}' >&3
+            exit 0
+        fi
+
+        echo '{"decision": "allow"}' >&3
+        exit 0
+    fi
+
+    if [[ "$tool_name" == "ask_question" || "$tool_name" == "ask_permission" || "$tool_name" == "ask_custom_permission" ]]; then
         tool_detail="$(echo "$input_json" | jq -r '
             .toolCall.args
-            | if .CommandLine then "Command: " + .CommandLine
-              elif .questions then "Question: " + (.questions[0].question // (tojson))
-              elif .Path then "Path: " + .Path
+            | if .questions then "Question: " + (.questions[0].question // (tojson))
               else (tojson)
               end
         ' 2>/dev/null || true)"
 
         title="${project_name:+[$project_name] }Approval Required: ${tool_name}"
-        message="${tool_detail}"
+        message="${tool_detail:-Tool: ${tool_name}}"
         if [[ -n "$user_input" ]]; then
             message="${message}"$'\n\n'"---"$'\n'"Prompt: ${user_input}"
         fi
 
-        log "INFO" "Sending Antigravity approval notification: title=${title}"
+        log "INFO" "Sending Antigravity interactive prompt notification: title=${title}"
         send_gotify || true
-
-        if [[ "$tool_name" == "ask_question" ]]; then
-            echo '{"decision": "allow"}' >&3
-        else
-            echo '{"decision": "ask"}' >&3
-        fi
-    else
-        echo '{"decision": "allow"}' >&3
     fi
+
+    echo '{"decision": "allow"}' >&3
     exit 0
 fi
 
-# 2. Stop (Task Completion / Error) / 任务完成与错误事件
+# 2. Stop (Task Completion / Terminal Step Waiting for User / Error) / 任务完成与错误事件
 reason="$(echo "$input_json" | jq -r '.terminationReason // "UNKNOWN"')"
 fully_idle="$(echo "$input_json" | jq -r 'if .fullyIdle == false then "false" else "true" end')"
 error_msg="$(echo "$input_json" | jq -r '.error // empty')"
@@ -161,7 +171,7 @@ if [[ "$reason" == "USER_CANCELED" ]]; then
     exit 0
 fi
 
-if [[ "$fully_idle" == "false" && "$reason" != "ERROR" && -z "$error_msg" ]]; then
+if [[ "$fully_idle" == "false" && "$reason" != "ERROR" && "$reason" != "TERMINAL_STEP_TYPE" && -z "$error_msg" ]]; then
     log "INFO" "Skipping notification: background tasks still running (fullyIdle=false)"
     echo '{"decision": "stop"}' >&3
     exit 0
@@ -176,6 +186,9 @@ if [[ "$reason" == "ERROR" || -n "$error_msg" ]]; then
     if [[ -n "$assistant_reply" ]]; then
         body="${assistant_reply}"$'\n\n'"Error: ${body}"
     fi
+elif [[ "$reason" == "TERMINAL_STEP_TYPE" ]]; then
+    title="${project_name:+[$project_name] }Approval Required"
+    body="${assistant_reply:-Waiting for your review or input.}"
 else
     title="${project_name:+[$project_name] }Task Completed"
     body="${assistant_reply}"
@@ -189,7 +202,7 @@ else
     message="Prompt: ${user_input:--}"
 fi
 
-log "INFO" "Sending Antigravity notification: title=${title}"
+log "INFO" "Sending Antigravity notification: title=${title} (reason=${reason})"
 send_gotify || true
 
 echo '{"decision": "stop"}' >&3
