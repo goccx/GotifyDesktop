@@ -10,6 +10,8 @@
 
 Gotify Desktop 专注于轻量化实时通知接收：消息属于你的 Gotify 服务端，客户端仅在运行期间于内存中展示和通知，不建立本地消息数据库，关闭主窗口后可继续驻留系统菜单栏保持后台接收。
 
+![Gotify Desktop](Resources/Screenshots/gotify-desktop.png)
+
 ## 下载与安装
 
 ### 支持平台与安装包下载
@@ -54,7 +56,7 @@ Gotify Desktop 专注于轻量化实时通知接收：消息属于你的 Gotify 
 make build    # 编译并组装 Debug 版 GotifyDesktop.app
 make run      # 编译并直接运行 GotifyDesktop.app
 make test     # 运行单元测试
-make release  # 打包 arm64 与 amd64 正式版 .dmg 安装包（输出至 .build/dist/）
+make release  # 打包 arm64 与 amd64 正式版 .dmg 安装包（输出至 build/dist/）
 ```
 
 ## 连接服务端
@@ -105,6 +107,7 @@ make release  # 打包 arm64 与 amd64 正式版 .dmg 安装包（输出至 .bui
 
 - **开源许可**：GotifyDesktop 采用 [MIT License](LICENSE) 授权，允许使用、修改、分发及商用，但须保留版权与许可声明。
 - **第三方声明**：[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 记录了第三方组件与资源（如 SwiftUIIntrospect、Gotify 通知音效等）的版权与原许可证声明，并随应用包分发。
+- **图标与形象署名**：应用图标与截图中出现的 Go Gopher（土拔鼠）形象由 [Renee French](https://go.dev/blog/gopher) 设计，采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 国际许可协议授权（Gotify 变体形象来自 [gotify/logo](https://github.com/gotify/logo)）。
 
 ## 免责声明
 

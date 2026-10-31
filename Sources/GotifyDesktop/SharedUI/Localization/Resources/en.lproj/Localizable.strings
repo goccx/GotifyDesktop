@@ -22,7 +22,10 @@
 "settings.iconCache.description" = "Only downloaded application icons are cached. Clearing this never removes messages or your server configuration.";
 "settings.systemNotifications" = "System notifications";
 "settings.notificationSound" = "Play Gotify notification sound";
+"settings.openSystemNotificationSettings" = "Open System Notification Settings…";
 "settings.notificationSound.description" = "New live-message banners use the official Gotify alert sound and follow the system notification settings.";
+"notification.enabled.title" = "System Notifications Enabled";
+"notification.enabled.body" = "Gotify Desktop will display native macOS banners when new messages arrive.";
 "settings.testingConnection" = "Verifying server and client token…";
 "settings.connectionFieldsLocked" = "Turn off receiving to edit this connection.";
 "settings.httpWarning" = "HTTP sends your token and messages without encryption.";

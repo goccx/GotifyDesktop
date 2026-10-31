@@ -9,8 +9,8 @@ help:
 	@echo "  build    Build and assemble debug GotifyDesktop.app"
 	@echo "  run      Build and launch debug GotifyDesktop.app"
 	@echo "  test     Run unit tests"
-	@echo "  release  Package arm64 and amd64 release .dmg installers in .build/dist/"
-	@echo "  clean    Remove build artifacts (.build)"
+	@echo "  release  Package arm64 and amd64 release .dmg installers in build/dist/"
+	@echo "  clean    Remove build artifacts (build)"
 
 build:
 	@./Tools/build-app.sh
@@ -22,8 +22,8 @@ release:
 	@./Tools/build-app.sh --release
 
 test:
-	swift test
+	swift test --build-path build
 
 clean:
-	swift package clean
-	rm -rf .build
+	swift package --build-path build clean
+	rm -rf build .build

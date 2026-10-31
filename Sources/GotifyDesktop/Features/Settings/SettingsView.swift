@@ -91,6 +91,13 @@ struct SettingsView: View {
                     .disabled(!notificationPreferences.systemNotificationsEnabled)
                     .accessibilityIdentifier("notification-sound-toggle")
 
+                HStack {
+                    Button(Localized.string("settings.openSystemNotificationSettings")) {
+                        notificationCoordinator.openSystemNotificationSettings()
+                    }
+                    .accessibilityIdentifier("open-system-notification-settings-button")
+                }
+
                 Text(Localized.string("settings.notificationSound.description"))
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -10,6 +10,8 @@ English | [简体中文](README.zh-CN.md)
 
 Gotify Desktop focuses on lightweight, real-time notification reading: messages belong to your Gotify server and are held only in process memory while the app is running. There is no local message database, and closing the main window keeps the app resident in the macOS menu bar to continue receiving notifications in the background.
 
+![Gotify Desktop](Resources/Screenshots/gotify-desktop.png)
+
 ## Download & Install
 
 ### Supported Platforms & Downloads
@@ -54,7 +56,7 @@ Requirements: macOS 14 or later, Swift 6.1 or later, and Apple's Xcode Command L
 make build    # Build and assemble debug GotifyDesktop.app
 make run      # Build and launch debug GotifyDesktop.app
 make test     # Run unit tests
-make release  # Package arm64 and amd64 release .dmg installers in .build/dist/
+make release  # Package arm64 and amd64 release .dmg installers in build/dist/
 ```
 
 ## Connect to a Server
@@ -105,6 +107,7 @@ See [`AgentNotify/README.md`](AgentNotify/README.md) ([简体中文](AgentNotify
 
 - **License**: GotifyDesktop is licensed under the [MIT License](LICENSE). Commercial use, modification, and redistribution are permitted subject to preserving the copyright and license notice.
 - **Third-Party Notices**: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) lists third-party attributions and licenses (such as SwiftUIIntrospect and the Gotify alert sound) and is bundled inside the packaged app.
+- **Artwork Attribution**: The Go Gopher character used in application icons and screenshots was designed by [Renee French](https://go.dev/blog/gopher) and is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) (Gotify variation from [gotify/logo](https://github.com/gotify/logo)).
 
 ## Disclaimer
 

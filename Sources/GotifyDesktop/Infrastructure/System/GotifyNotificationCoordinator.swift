@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import Foundation
 import OSLog
 
@@ -32,24 +33,61 @@ final class GotifyNotificationCoordinator: NSObject, ObservableObject, GotifyMes
         super.init()
         // AppKit suppresses a frontmost app by default; Gotify banners must stay useful while its window is open.
         notificationCenter.delegate = self
+        registerWithSystemNotificationCenterIfNeeded()
     }
 
-    /// This is an app preference only. The legacy notification center asks macOS for authorization on first delivery.
+    /// Registers the packaged `.app` with macOS Notification Center on first launch so the system
+    /// authorization prompt appears immediately and the app is listed under System Settings -> Notifications.
+    private func registerWithSystemNotificationCenterIfNeeded() {
+        guard Bundle.main.bundlePath.hasSuffix(".app"),
+              preferences.systemNotificationsEnabled,
+              !Defaults[.didRegisterNotificationCenter]
+        else { return }
+        Defaults[.didRegisterNotificationCenter] = true
+        deliverNotification(
+            title: Localized.string("notification.enabled.title"),
+            body: Localized.string("notification.enabled.body")
+        )
+    }
+
+    /// Toggling system notifications on immediately delivers a registration/preview banner so macOS
+    /// adds Gotify Desktop to Notification Center and opens System Notification Settings for verification.
     func setSystemNotificationsEnabled(_ enabled: Bool) {
         preferences.systemNotificationsEnabled = enabled
+        guard enabled else { return }
+        deliverNotification(
+            title: Localized.string("notification.enabled.title"),
+            body: Localized.string("notification.enabled.body")
+        )
+        openSystemNotificationSettings()
+    }
+
+    /// Opens the macOS System Settings -> Notifications pane directly.
+    func openSystemNotificationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     /// Delivers a legacy macOS notification after the message has entered the bounded in-memory session window.
     func notifyAboutLiveMessage(_ message: GotifyMessage) {
         guard preferences.systemNotificationsEnabled else { return }
+        deliverNotification(
+            title: message.title.isEmpty ? message.sourceName : message.title,
+            body: message.body
+        )
+    }
 
+    private func deliverNotification(title: String, body: String) {
         let notification = NSUserNotification()
-        notification.title = message.title.isEmpty ? message.sourceName : message.title
-        notification.informativeText = message.body
+        notification.identifier = UUID().uuidString
+        notification.title = title
+        notification.informativeText = body
         // NSUserNotification resolves a named sound from the application bundle; nil deliberately suppresses it.
         notification.soundName = preferences.notificationSoundEnabled ? Configuration.officialSoundFilename : nil
         notificationCenter.deliver(notification)
-        logger.notice("Delivered legacy macOS notification for a live message")
+        logger.notice("Delivered legacy macOS notification")
     }
 
     /// Lets macOS show a banner while Gotify Desktop is frontmost; user notification settings still win.
@@ -66,5 +104,15 @@ final class GotifyNotificationCoordinator: NSObject, ObservableObject, GotifyMes
         didDeliver notification: NSUserNotification
     ) {
         logger.notice("Legacy notification delivery callback; presented: \(notification.isPresented, privacy: .public)")
+    }
+
+    /// Clicking a delivered macOS banner brings the application forward.
+    nonisolated func userNotificationCenter(
+        _ center: NSUserNotificationCenter,
+        didActivate notification: NSUserNotification
+    ) {
+        Task { @MainActor in
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }

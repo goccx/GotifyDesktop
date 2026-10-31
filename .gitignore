@@ -1,4 +1,5 @@
 # SwiftPM build products and local package metadata.
+/build/
 .build/
 .swiftpm/
 .DS_Store

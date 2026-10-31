@@ -16,6 +16,7 @@ struct GotifyDesktopApp: App {
     @StateObject private var serverPreferences: ServerPreferences
 
     init() {
+        LegacyBundlePreferencesMigration.migrateIfNeeded()
         let store = Container.shared.messageStore()
         let notificationPreferences = NotificationPreferences()
         let notificationCoordinator = GotifyNotificationCoordinator(preferences: notificationPreferences)
@@ -34,7 +35,7 @@ struct GotifyDesktopApp: App {
     }
 
     var body: some Scene {
-        WindowGroup(Localized.string("app.name"), id: "main") {
+        Window(Localized.string("app.name"), id: "main") {
             InboxView()
                 .environmentObject(messageStore)
                 .environmentObject(preferences)

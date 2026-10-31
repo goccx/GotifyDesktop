@@ -66,9 +66,39 @@ extension Defaults.Keys {
     /// This is an opt-in receive preference, not persisted message data or an unread state.
     static let receivesMessages = Key<Bool>("receivesMessages", default: false)
     /// A user choice to request macOS banners; it never controls the Gotify connection itself.
-    static let systemNotificationsEnabled = Key<Bool>("systemNotificationsEnabled", default: false)
+    static let systemNotificationsEnabled = Key<Bool>("systemNotificationsEnabled", default: true)
     /// Controls the custom sound attached to native notification requests, never message data.
     static let notificationSoundEnabled = Key<Bool>("notificationSoundEnabled", default: true)
+    /// Records whether the current bundle has triggered initial macOS Notification Center registration.
+    static let didRegisterNotificationCenter = Key<Bool>("didRegisterNotificationCenterV1", default: false)
+}
+
+enum LegacyBundlePreferencesMigration {
+    private static let legacyDomain = "com.gotify.desktop"
+    private static let migratedFlagKey = "didMigrateLegacyBundleDomainV1"
+    private static let keysToMigrate = [
+        "appearance",
+        "language",
+        "serverURL",
+        "encryptedClientToken",
+        "receivesMessages",
+        "notificationSoundEnabled",
+    ]
+
+    /// Preserves non-message preferences across the bundle identifier transition away from the
+    /// poisoned `com.gotify.desktop` notification registration domain.
+    static func migrateIfNeeded() {
+        let standard = UserDefaults.standard
+        guard !standard.bool(forKey: migratedFlagKey) else { return }
+        defer { standard.set(true, forKey: migratedFlagKey) }
+
+        guard let legacyDefaults = UserDefaults(suiteName: legacyDomain) else { return }
+        for key in keysToMigrate where standard.object(forKey: key) == nil {
+            if let value = legacyDefaults.object(forKey: key) {
+                standard.set(value, forKey: key)
+            }
+        }
+    }
 }
 
 /// This adapter is the sole UI-facing owner of the Defaults-backed appearance setting.

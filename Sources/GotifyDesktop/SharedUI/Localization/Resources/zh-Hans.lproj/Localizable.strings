@@ -22,7 +22,10 @@
 "settings.iconCache.description" = "这里仅缓存已下载的应用图标。清除不会删除消息或服务端配置。";
 "settings.systemNotifications" = "系统通知";
 "settings.notificationSound" = "播放 Gotify 通知音";
+"settings.openSystemNotificationSettings" = "打开系统通知设置…";
 "settings.notificationSound.description" = "实时新消息横幅使用 Gotify 官方提示音，并遵从系统通知设置。";
+"notification.enabled.title" = "系统通知已开启";
+"notification.enabled.body" = "收到实时新消息时将在屏幕右上角展示 macOS 原生横幅通知。";
 "settings.testingConnection" = "正在验证服务端和 Client Token…";
 "settings.connectionFieldsLocked" = "关闭接收消息后即可编辑此连接。";
 "settings.httpWarning" = "HTTP 会以明文传输 token 和消息。";
