@@ -74,11 +74,23 @@ Call [`gotify-notify.sh`](./gotify-notify.sh) directly with `<title>` and `<mess
 Replace `/Users/your-username/.gotify/xxx-notify.sh` below with the actual absolute path on your machine.
 
 #### A. Antigravity
-Edit `~/.gemini/config/hooks.json`:
+Edit `~/.gemini/config/hooks.json` (supports both `Stop` completion notifications and `PreToolUse` approval alerts):
 ```json
 {
   "gotify-notify": {
     "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "run_command|read_file|write_file|edit_file|ask_question",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/your-username/.gotify/antigravity-notify.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "type": "command",
@@ -91,10 +103,21 @@ Edit `~/.gemini/config/hooks.json`:
 ```
 
 #### B. Claude Code
-Edit `~/.claude/settings.json`:
+Edit `~/.claude/settings.json` (supports both `Stop` completion notifications and `Notification` approval alerts):
 ```json
 {
   "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/your-username/.gotify/claude-notify.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "*",
@@ -111,10 +134,22 @@ Edit `~/.claude/settings.json`:
 ```
 
 #### C. Gemini CLI
-Edit `~/.gemini/settings.json`:
+Edit `~/.gemini/settings.json` (supports both `AfterAgent` completion notifications and `Notification` approval alerts):
 ```json
 {
   "hooks": {
+    "Notification": [
+      {
+        "matcher": "ToolPermission",
+        "hooks": [
+          {
+            "name": "gotify-approval",
+            "type": "command",
+            "command": "/Users/your-username/.gotify/gemini-notify.sh"
+          }
+        ]
+      }
+    ],
     "AfterAgent": [
       {
         "matcher": "*",

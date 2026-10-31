@@ -9,6 +9,7 @@ struct InboxView: View {
     @EnvironmentObject private var preferences: AppPreferences
     /// The token is supplied only to authenticated icon requests and is never serialized by the image cache.
     @EnvironmentObject private var serverPreferences: ServerPreferences
+    @EnvironmentObject private var notificationCoordinator: GotifyNotificationCoordinator
     @State private var selection: SidebarSelection? = .allMessages
     @State private var readyPage: MessagePage = .all
     @State private var transitionID = UUID()
@@ -16,6 +17,10 @@ struct InboxView: View {
     @State private var pendingSingleDeleteMessage: GotifyMessage?
     @State private var pendingBulkDeletePage: MessagePage?
     @State private var showsDeleteErrorAlert = false
+    @State private var sidebarReselectionVersion = UUID()
+    @State private var selectedMessage: GotifyMessage?
+    @State private var isNavigatingFromNotification = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         // `page` always follows `selectedPage` at T0 so the previous page's messages can never
@@ -31,6 +36,9 @@ struct InboxView: View {
                 newMessageCount: messageStore.newMessageCount,
                 newMessageCountsBySource: newMessageCountsBySource,
                 clientToken: serverPreferences.clientToken,
+                reselectCurrentItem: {
+                    sidebarReselectionVersion = UUID()
+                },
                 requestBulkDelete: { targetPage in
                     pendingBulkDeletePage = targetPage
                 }
@@ -39,6 +47,7 @@ struct InboxView: View {
             ReadingCanvas(
                 timelineItems: isTransitioning ? [] : pageItems,
                 page: page,
+                sidebarReselectionVersion: sidebarReselectionVersion,
                 navigationTitle: navigationTitle,
                 pageLoadState: isTransitioning ? .loading(transitionID) : messageStore.pageLoadState(for: page),
                 hasNextPage: !isTransitioning && messageStore.hasNextPage(for: page),
@@ -56,7 +65,8 @@ struct InboxView: View {
                 setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: page) },
                 consumeScrollAnchor: { id in consumeScrollAnchor(id, for: page) },
                 deleteMessage: { message in pendingSingleDeleteMessage = message },
-                requestBulkDelete: { pendingBulkDeletePage = page }
+                requestBulkDelete: { pendingBulkDeletePage = page },
+                selectedMessage: $selectedMessage
             )
         }
         .confirmationDialog(
@@ -76,7 +86,9 @@ struct InboxView: View {
                 pendingSingleDeleteMessage = nil
             }
         } message: { targetMessage in
-            let summary = targetMessage.title.isEmpty ? targetMessage.body : targetMessage.title
+            let summary = MessageMarkdownParser.plainTextSummary(
+                from: targetMessage.title.isEmpty ? targetMessage.body : targetMessage.title
+            )
             Text(Localized.string("message.delete.confirm.description", summary))
         }
         .confirmationDialog(
@@ -126,12 +138,43 @@ struct InboxView: View {
         // The application menu is AppKit-owned rather than a SwiftUI view, so language changes require this bridge.
         .onAppear {
             ApplicationMenuLocalization.apply(appName: Localized.string("app.name"))
+            if let target = notificationCoordinator.activatedTarget {
+                handleActivatedNotification(target)
+            }
         }
         .onChange(of: preferences.language) { _ in
             ApplicationMenuLocalization.apply(appName: Localized.string("app.name"))
         }
         .onChange(of: selection) { _ in
+            if isNavigatingFromNotification {
+                isNavigatingFromNotification = false
+            } else {
+                selectedMessage = nil
+            }
             schedulePageSwitch(to: selectedPage)
+        }
+        .onChange(of: notificationCoordinator.activatedTarget) { target in
+            guard let target else { return }
+            handleActivatedNotification(target)
+        }
+        .onChange(of: messageStore.sessionVersion) { _ in
+            selectedMessage = nil
+        }
+    }
+
+    private func handleActivatedNotification(_ target: GotifyNotificationCoordinator.ActivatedNotificationTarget) {
+        notificationCoordinator.consumeActivatedTarget(target)
+        Task { @MainActor in
+            guard let message = await messageStore.findMessage(id: target.messageID) else { return }
+            let currentPage = selectedPage
+            if case let .application(currentSourceID) = currentPage, currentSourceID != target.sourceID {
+                isNavigatingFromNotification = true
+                selection = .source(id: target.sourceID)
+            }
+            messageStore.markMessageViewed(message.id, sourceID: message.sourceID)
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                selectedMessage = message
+            }
         }
     }
 
@@ -142,7 +185,10 @@ struct InboxView: View {
 
         if !hasMessages {
             readyPage = targetPage
-            Task { await serverPreferences.loadMessages(for: sourceID) }
+            Task {
+                await serverPreferences.loadMessages(for: sourceID)
+                await messageStore.revealPendingLiveMessages(for: targetPage)
+            }
             return
         }
 
@@ -155,6 +201,7 @@ struct InboxView: View {
             guard !Task.isCancelled else { return }
             readyPage = targetPage
             await serverPreferences.loadMessages(for: sourceID)
+            await messageStore.revealPendingLiveMessages(for: targetPage)
         }
     }
 
@@ -214,6 +261,9 @@ struct InboxView: View {
         Task {
             do {
                 try await serverPreferences.deleteMessage(message)
+                if selectedMessage?.id == message.id {
+                    selectedMessage = nil
+                }
             } catch {
                 showsDeleteErrorAlert = true
             }
@@ -224,6 +274,11 @@ struct InboxView: View {
         Task {
             do {
                 try await serverPreferences.deleteMessages(for: page.sourceID)
+                if let current = selectedMessage {
+                    if page == .all || page == .application(current.sourceID) {
+                        selectedMessage = nil
+                    }
+                }
             } catch {
                 showsDeleteErrorAlert = true
             }
@@ -281,6 +336,7 @@ private struct SidebarView: View {
     let newMessageCount: Int
     let newMessageCountsBySource: [Int64: Int]
     let clientToken: String
+    let reselectCurrentItem: () -> Void
     let requestBulkDelete: (MessagePage) -> Void
 
     var body: some View {
@@ -290,6 +346,14 @@ private struct SidebarView: View {
                 systemImage: "tray.full",
                 count: newMessageCount,
                 isSelected: selection == .allMessages
+            )
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    if selection == .allMessages {
+                        reselectCurrentItem()
+                    }
+                }
             )
             .tag(SidebarSelection.allMessages)
             .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
@@ -312,6 +376,14 @@ private struct SidebarView: View {
                     count: newMessageCountsBySource[source.id] ?? 0,
                     clientToken: clientToken,
                     isSelected: selection == item
+                )
+                .contentShape(Rectangle())
+                .simultaneousGesture(
+                    TapGesture().onEnded {
+                        if selection == item {
+                            reselectCurrentItem()
+                        }
+                    }
                 )
                 .tag(item)
                 .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
@@ -451,6 +523,7 @@ private struct ConnectionStatusLabel: View {
 private struct ReadingCanvas: View {
     let timelineItems: [MessageTimelineItem]
     let page: MessagePage
+    let sidebarReselectionVersion: UUID
     let navigationTitle: String
     let pageLoadState: MessagePageLoadState
     let hasNextPage: Bool
@@ -469,7 +542,7 @@ private struct ReadingCanvas: View {
     let consumeScrollAnchor: (Int64) -> Void
     let deleteMessage: (GotifyMessage) -> Void
     let requestBulkDelete: () -> Void
-    @State private var selectedMessage: GotifyMessage?
+    @Binding var selectedMessage: GotifyMessage?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -546,19 +619,10 @@ private struct ReadingCanvas: View {
             }
         }
         .navigationTitle(navigationTitle)
-        .onChange(of: page) { _ in
-            selectedMessage = nil
-        }
-        .onChange(of: timelineItems) { items in
-            guard let selectedMessage else { return }
-            let stillPresent = items.contains { item in
-                if case let .message(message) = item {
-                    return message.id == selectedMessage.id
-                }
-                return false
-            }
-            if !stillPresent {
-                self.selectedMessage = nil
+        .onChange(of: sidebarReselectionVersion) { _ in
+            guard selectedMessage != nil else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                selectedMessage = nil
             }
         }
     }
@@ -635,39 +699,55 @@ private struct MessageListView: View {
         }
     }
 
-    /// Full-width centered top bar: clicking anywhere on the bar reveals all pending new messages and clears the prompt.
+    /// Top bar for unread / pending live messages: clicking the main area reveals pending messages
+    /// and scrolls to the top while keeping each message unread until its detail view is opened;
+    /// the trailing action explicitly marks all messages in the current scope as viewed.
     private func newMessagesTopBar(proxy: ScrollViewProxy) -> some View {
-        Button {
-            Task {
-                await revealPendingLiveMessages()
-                markAllMessagesViewed()
-                if let firstID = timelineItems.first?.id {
-                    proxy.scrollTo(firstID, anchor: .top)
+        HStack(spacing: 0) {
+            Button {
+                Task {
+                    await revealPendingLiveMessages()
+                    if let firstID = timelineItems.first?.id {
+                        proxy.scrollTo(firstID, anchor: .top)
+                    }
                 }
+            } label: {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(.blue)
+                        .frame(width: 7, height: 7)
+                    Text(newMessageHeader)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .contentShape(Rectangle())
             }
-        } label: {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(.blue)
-                    .frame(width: 7, height: 7)
-                Text(newMessageHeader)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(newMessageHeader)
+            .accessibilityIdentifier("show-new-messages-button")
+
+            if newMessageCount > 0 {
+                Button(action: markAllMessagesViewed) {
+                    Text(Localized.string("message.markAllViewed"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("mark-all-messages-viewed-button")
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .background(isTopBarHovered ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04))
-            .background(.bar)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .background(isTopBarHovered ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04))
+        .background(.bar)
         .onHover { hovering in
             isTopBarHovered = hovering
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(newMessageHeader)
-        .accessibilityIdentifier("show-new-messages-button")
     }
 
     /// The exact count remains available to accessibility; the visual counter follows the agreed compact cap.
@@ -781,9 +861,8 @@ private struct MessageTimelineListRow: View {
                     }
                     .accessibilityIdentifier("context-delete-page-messages-\(message.id)")
                 }
-                .onAppear { setMessageVisibility(message.id, isPresented) }
+                .onAppear { setMessageVisibility(message.id, true) }
                 .onDisappear { setMessageVisibility(message.id, false) }
-                .onChange(of: isPresented) { presented in setMessageVisibility(message.id, presented) }
             case let .gap(gap):
                 NextMessagePageSentinel(
                     isEnabled: isPresented,
@@ -878,7 +957,11 @@ private struct MessageRowContent: View, Equatable {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if isNew { Circle().fill(.blue).frame(width: 7, height: 7) }
-                    Text(message.title.isEmpty ? message.body : message.title)
+                    Text(
+                        MessageMarkdownParser.plainTextSummary(
+                            from: message.title.isEmpty ? message.body : message.title
+                        )
+                    )
                         .font(isNew ? .headline.weight(.semibold) : .headline)
                         .lineLimit(1)
                     Spacer(minLength: 8)
@@ -886,7 +969,7 @@ private struct MessageRowContent: View, Equatable {
                         .font(.caption)
                         .fixedSize(horizontal: true, vertical: false)
                 }
-                Text(message.body)
+                Text(MessageMarkdownParser.summaryAttributedString(from: message.body))
                     .foregroundStyle(.secondary)
                     // Reserve identical summary height for short and long messages to avoid
                     // variable-height remeasurement when the native list appends a page.
@@ -994,7 +1077,11 @@ private struct MessageDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline, spacing: 20) {
-                    Text(message.title.isEmpty ? message.body : message.title)
+                    Text(
+                        MessageMarkdownParser.plainTextSummary(
+                            from: message.title.isEmpty ? message.body : message.title
+                        )
+                    )
                         .font(.title2.weight(.semibold))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1013,10 +1100,7 @@ private struct MessageDetailView: View {
 
                 Divider()
 
-                Text(message.body)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                MessageMarkdownView(text: message.body)
                 }
                 .padding(28)
                 .frame(maxWidth: 820, alignment: .leading)

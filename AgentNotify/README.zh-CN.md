@@ -74,11 +74,23 @@ realpath ~/.gotify/
 将下方配置中的 `/Users/你的用户名/.gotify/xxx-notify.sh` 替换为你本机的实际绝对路径。
 
 #### A. Antigravity（反重力）
-打开 `~/.gemini/config/hooks.json`：
+打开 `~/.gemini/config/hooks.json`（支持 `Stop` 任务完成通知与 `PreToolUse` 工具审批提醒）：
 ```json
 {
   "gotify-notify": {
     "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "run_command|read_file|write_file|edit_file|ask_question",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/你的用户名/.gotify/antigravity-notify.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "type": "command",
@@ -91,10 +103,21 @@ realpath ~/.gotify/
 ```
 
 #### B. Claude Code
-打开 `~/.claude/settings.json`：
+打开 `~/.claude/settings.json`（支持 `Stop` 任务完成通知与 `Notification` 权限审批提醒）：
 ```json
 {
   "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/你的用户名/.gotify/claude-notify.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "*",
@@ -111,10 +134,22 @@ realpath ~/.gotify/
 ```
 
 #### C. Gemini CLI
-打开 `~/.gemini/settings.json`：
+打开 `~/.gemini/settings.json`（支持 `AfterAgent` 任务完成通知与 `Notification` 权限审批提醒）：
 ```json
 {
   "hooks": {
+    "Notification": [
+      {
+        "matcher": "ToolPermission",
+        "hooks": [
+          {
+            "name": "gotify-approval",
+            "type": "command",
+            "command": "/Users/你的用户名/.gotify/gemini-notify.sh"
+          }
+        ]
+      }
+    ],
     "AfterAgent": [
       {
         "matcher": "*",

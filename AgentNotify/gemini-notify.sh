@@ -68,11 +68,18 @@ send_gotify() {
 
 input_json="$(cat)"
 
-# Gemini CLI AfterAgent event fields / AfterAgent 事件字段: cwd, prompt_response, message
+# Gemini CLI Hook fields / 事件字段: hook_event_name, cwd, prompt_response, message
+event_name="$(echo "$input_json" | jq -r '.hook_event_name // "AfterAgent"')"
 cwd="$(echo "$input_json" | jq -r '.cwd // empty')"
 project_name="${cwd:+$(basename "$cwd")}"
-title="${project_name:+[$project_name] }Task Completed"
-message="$(echo "$input_json" | jq -r '.prompt_response // .message // "Task finished."')"
+
+if [[ "$event_name" == "Notification" ]]; then
+    title="${project_name:+[$project_name] }Approval Required"
+    message="$(echo "$input_json" | jq -r '.message // "Waiting for your approval or input."')"
+else
+    title="${project_name:+[$project_name] }Task Completed"
+    message="$(echo "$input_json" | jq -r '.prompt_response // .message // "Task finished."')"
+fi
 
 log "INFO" "Sending Gemini CLI notification: title=${title}"
 send_gotify || true

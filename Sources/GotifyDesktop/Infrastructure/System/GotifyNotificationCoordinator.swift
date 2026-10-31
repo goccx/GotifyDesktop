@@ -17,8 +17,17 @@ final class GotifyNotificationCoordinator: NSObject, ObservableObject, GotifyMes
     private enum Configuration {
         /// This exact resource filename is copied into the finished main App bundle by the packaging script.
         static let officialSoundFilename = "GotifyNotification.caf"
+        static let messageIDUserInfoKey = "messageID"
+        static let sourceIDUserInfoKey = "sourceID"
     }
 
+    struct ActivatedNotificationTarget: Equatable, Sendable {
+        let id = UUID()
+        let messageID: Int64
+        let sourceID: Int64
+    }
+
+    @Published private(set) var activatedTarget: ActivatedNotificationTarget?
     private let preferences: NotificationPreferences
     private let notificationCenter: NSUserNotificationCenter
     /// Diagnostics intentionally contain framework state only, never Gotify content or credentials.
@@ -86,16 +95,26 @@ final class GotifyNotificationCoordinator: NSObject, ObservableObject, GotifyMes
     func notifyAboutLiveMessage(_ message: GotifyMessage) {
         guard preferences.systemNotificationsEnabled else { return }
         deliverNotification(
-            title: message.title.isEmpty ? message.sourceName : message.title,
-            body: message.body
+            title: message.title.isEmpty ? message.sourceName : MessageMarkdownParser.plainTextSummary(from: message.title),
+            body: MessageMarkdownParser.plainTextSummary(from: message.body),
+            userInfo: [
+                Configuration.messageIDUserInfoKey: NSNumber(value: message.id),
+                Configuration.sourceIDUserInfoKey: NSNumber(value: message.sourceID),
+            ]
         )
     }
 
-    private func deliverNotification(title: String, body: String) {
+    func consumeActivatedTarget(_ target: ActivatedNotificationTarget) {
+        guard activatedTarget == target else { return }
+        activatedTarget = nil
+    }
+
+    private func deliverNotification(title: String, body: String, userInfo: [String: Any]? = nil) {
         let notification = NSUserNotification()
         notification.identifier = UUID().uuidString
         notification.title = title
         notification.informativeText = body
+        notification.userInfo = userInfo
         // NSUserNotification resolves a named sound from the application bundle; nil deliberately suppresses it.
         notification.soundName = preferences.notificationSoundEnabled ? Configuration.officialSoundFilename : nil
         notificationCenter.deliver(notification)
@@ -118,13 +137,18 @@ final class GotifyNotificationCoordinator: NSObject, ObservableObject, GotifyMes
         logger.notice("Legacy notification delivery callback; presented: \(notification.isPresented, privacy: .public)")
     }
 
-    /// Clicking a delivered macOS banner brings the application forward.
+    /// Clicking a delivered macOS banner brings the application forward and navigates to the message detail.
     nonisolated func userNotificationCenter(
         _ center: NSUserNotificationCenter,
         didActivate notification: NSUserNotification
     ) {
+        let messageID = (notification.userInfo?[Configuration.messageIDUserInfoKey] as? NSNumber)?.int64Value
+        let sourceID = (notification.userInfo?[Configuration.sourceIDUserInfoKey] as? NSNumber)?.int64Value
         Task { @MainActor in
             AppWindowCoordinator.shared.openMainWindow()
+            if let messageID, let sourceID {
+                self.activatedTarget = ActivatedNotificationTarget(messageID: messageID, sourceID: sourceID)
+            }
         }
     }
 }

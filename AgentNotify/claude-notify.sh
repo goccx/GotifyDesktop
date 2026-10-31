@@ -68,11 +68,18 @@ send_gotify() {
 
 input_json="$(cat)"
 
-# Claude Code Stop event fields / Stop 事件字段: cwd, last_assistant_message, message
+# Claude Code Hook fields / 事件字段: hook_event_name, cwd, last_assistant_message, message, notification_type
+event_name="$(echo "$input_json" | jq -r '.hook_event_name // "Stop"')"
 cwd="$(echo "$input_json" | jq -r '.cwd // empty')"
 project_name="${cwd:+$(basename "$cwd")}"
-title="${project_name:+[$project_name] }Task Completed"
-message="$(echo "$input_json" | jq -r '.last_assistant_message // .message // "Task finished."')"
+
+if [[ "$event_name" == "Notification" ]]; then
+    title="${project_name:+[$project_name] }Approval Required"
+    message="$(echo "$input_json" | jq -r '.message // "Waiting for your approval or input."')"
+else
+    title="${project_name:+[$project_name] }Task Completed"
+    message="$(echo "$input_json" | jq -r '.last_assistant_message // .message // "Task finished."')"
+fi
 
 log "INFO" "Sending Claude Code notification: title=${title}"
 send_gotify || true

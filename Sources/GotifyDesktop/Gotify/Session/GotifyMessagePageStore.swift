@@ -98,6 +98,20 @@ actor GotifyMessagePageStore {
         )
     }
 
+    func findMessage(id: Int64) -> GotifyMessage? {
+        for state in timelines.values {
+            for item in state.items {
+                if case let .message(message) = item, message.id == id {
+                    return message
+                }
+            }
+            if let pending = state.pendingLiveMessages.first(where: { $0.id == id }) {
+                return pending
+            }
+        }
+        return nil
+    }
+
     func beginInitialLoad(for page: MessagePage, sessionID expectedSessionID: UUID) -> UUID? {
         guard expectedSessionID == sessionID else { return nil }
         var state = timelines[page] ?? TimelineState()

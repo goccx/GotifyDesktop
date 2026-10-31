@@ -72,6 +72,7 @@ final class MessageStore: ObservableObject {
     private var applicationsByID: [Int64: GotifyApplication] = [:]
     @Published private var newMessagesBySource: [Int64: NewMessageState] = [:]
     @Published private(set) var connectionState: ConnectionState = .notConfigured
+    @Published private(set) var sessionVersion = UUID()
 
     init() {
         let sessionID = UUID()
@@ -86,6 +87,14 @@ final class MessageStore: ObservableObject {
     func messages(for page: MessagePage) -> [GotifyMessage] { snapshots[page]?.messages ?? [] }
     func timelineItems(for page: MessagePage) -> [MessageTimelineItem] { snapshots[page]?.items ?? [] }
     func pageLoadState(for page: MessagePage) -> MessagePageLoadState { snapshots[page]?.loadState ?? .idle }
+    func findMessage(id: Int64) async -> GotifyMessage? {
+        for snapshot in snapshots.values {
+            if let message = snapshot.messages.first(where: { $0.id == id }) {
+                return message
+            }
+        }
+        return await pageStore.findMessage(id: id)
+    }
     func hasPendingLiveMessages(for page: MessagePage) -> Bool {
         snapshots[page]?.hasPendingLiveMessages ?? false
     }
@@ -188,6 +197,7 @@ final class MessageStore: ObservableObject {
 
     func discardCurrentSession() async {
         sessionID = UUID()
+        sessionVersion = sessionID
         await pageStore.discardSession(replacingSessionID: sessionID)
         snapshots.removeAll(keepingCapacity: true)
         applicationsByID.removeAll(keepingCapacity: true)

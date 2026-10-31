@@ -438,4 +438,104 @@ struct GotifyDesktopTests {
         )
         #expect(serialized.isEmpty)
     }
+
+    @Test
+    func markdownParserBuildsStructuredBlocksForHeadingsListsCodeDividersAndTables() {
+        let sample = """
+        ### 1. [`AgentNotify/README.zh-CN.md`](file:///Users/testm/gitwork/GotifyDesk/AgentNotify/README.zh-CN.md) 里的配置
+
+        1. **Antigravity (`antigravity-notify.sh`)**：
+           - `PreToolUse`：自动判断审批
+
+        > 原始消息精致处理
+
+        ```json
+        {
+          "decision": "allow"
+        }
+        ```
+
+        | 事件 | 行为 |
+        | --- | --- |
+        | Stop | 完成通知 |
+
+        ---
+        Prompt: 继续迭代
+        """
+
+        let blocks = MessageMarkdownParser.parseBlocks(from: sample)
+        #expect(blocks == [
+            .heading(
+                level: 3,
+                text: "1. [`AgentNotify/README.zh-CN.md`](file:///Users/testm/gitwork/GotifyDesk/AgentNotify/README.zh-CN.md) 里的配置"
+            ),
+            .orderedListItem(
+                indent: 0,
+                marker: "1.",
+                text: "**Antigravity (`antigravity-notify.sh`)**："
+            ),
+            .unorderedListItem(
+                indent: 1,
+                text: "`PreToolUse`：自动判断审批"
+            ),
+            .blockquote(text: "原始消息精致处理"),
+            .codeBlock(language: "json", code: "{\n  \"decision\": \"allow\"\n}"),
+            .table(headers: ["事件", "行为"], rows: [["Stop", "完成通知"]]),
+            .horizontalRule,
+            .paragraph(text: "Prompt: 继续迭代"),
+        ])
+    }
+
+    @Test
+    func markdownInlineParserStripsLocalFileLinksPreservesWebLinksAndHandlesCJKBold() throws {
+        let raw = "查看 [`AgentNotify/README.zh-CN.md`](file:///Users/testm/gitwork/GotifyDesk/AgentNotify/README.zh-CN.md) 与 [Gotify 文档](https://gotify.net/docs)，都是**唯一且最佳的无误报方案**：且 **Antigravity (`hooks.json`)**是最佳。"
+        let attributed = MessageMarkdownParser.inlineAttributedString(from: raw)
+        let plainText = String(attributed.characters)
+
+        #expect(plainText == "查看 AgentNotify/README.zh-CN.md 与 Gotify 文档，都是唯一且最佳的无误报方案：且 Antigravity (hooks.json)是最佳。")
+        #expect(!plainText.contains("file://"))
+        #expect(!plainText.contains("**"))
+
+        let links = attributed.runs.compactMap(\.link)
+        #expect(links == [try #require(URL(string: "https://gotify.net/docs"))])
+
+        let boldText = attributed.runs
+            .filter { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true }
+            .map { String(attributed[$0.range].characters) }
+            .joined()
+        #expect(boldText.contains("唯一且最佳的无误报方案"))
+        #expect(boldText.contains("Antigravity ("))
+    }
+
+    @Test
+    func plainTextSummaryCollapsesMarkdownBlocksForListRowsAndBanners() {
+        let raw = """
+        ### 1. [`AgentNotify/README.zh-CN.md`](file:///Users/testm/gitwork/GotifyDesk/AgentNotify/README.zh-CN.md)
+        里的配置，都是**唯一且最佳的无误报方案**：
+        ---
+        Prompt: 继续迭代
+        """
+
+        let summary = MessageMarkdownParser.plainTextSummary(from: raw)
+        #expect(summary == "1. AgentNotify/README.zh-CN.md 里的配置，都是唯一且最佳的无误报方案： Prompt: 继续迭代")
+    }
+
+    @Test
+    func findMessageLocatesMessageAcrossAllAndPendingBuffersForNotificationActivation() async {
+        let store = MessageStore()
+        let message = GotifyMessage(
+            id: 88,
+            title: "Task Completed",
+            body: "Done",
+            sourceID: 5,
+            sourceName: "antigravity",
+            priority: 5,
+            receivedAt: .now,
+            url: nil
+        )
+
+        #expect(await store.insertCurrentSessionMessage(message))
+        let located = await store.findMessage(id: 88)
+        #expect(located == message)
+    }
 }

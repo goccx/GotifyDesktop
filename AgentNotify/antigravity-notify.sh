@@ -30,7 +30,7 @@ cd "$shell_folder"
 log_file="$shell_folder/${script_name}.log"
 
 # Keep fd 3 for the final Hook JSON output; redirect all logs to the log file.
-# Antigravity Hook 要求 stdout 只输出纯 JSON（{"decision": "stop"}），保留 fd 3 输出 JSON，日志写入文件。
+# Antigravity Hook 要求 stdout 只输出纯 JSON，保留 fd 3 输出 JSON，日志写入文件。
 exec 3>&1
 exec >> "$log_file" 2>&1
 
@@ -66,27 +66,127 @@ send_gotify() {
     return 1
 }
 
+extract_last_reply() {
+    local transcript_path="$1"
+    if [[ -z "$transcript_path" ]]; then
+        return 0
+    fi
+
+    local full_transcript="${transcript_path%/transcript.jsonl}/transcript_full.jsonl"
+    local target_file="$transcript_path"
+    if [[ -f "$full_transcript" ]]; then
+        target_file="$full_transcript"
+    fi
+
+    if [[ ! -f "$target_file" ]]; then
+        return 0
+    fi
+
+    jq -sr '
+        [.[] | select(.type == "PLANNER_RESPONSE" and ((.content // "") | length > 0)) | .content]
+        | last // empty
+    ' "$target_file" 2>/dev/null || true
+}
+
 input_json="$(cat)"
 
-# Antigravity Stop event fields / Stop 事件字段: terminationReason, workspacePaths, lastUserInput, error
-reason="$(echo "$input_json" | jq -r '.terminationReason // "UNKNOWN"')"
+workspace="$(echo "$input_json" | jq -r '.workspacePaths[0] // empty')"
+project_name="${workspace:+$(basename "$workspace")}"
+user_input="$(echo "$input_json" | jq -r '.lastUserInput // empty')"
+tool_name="$(echo "$input_json" | jq -r '.toolCall.name // empty')"
 
+# 1. PreToolUse (Approval / Tool Execution Gate) / 工具执行与审批事件
+if [[ -n "$tool_name" ]]; then
+    # Only notify when the tool call actually requires manual user approval:
+    # 1) `run_command` with `BypassSandbox: true` (sandboxed commands auto-run without prompting)
+    # 2) File tools (`Path` argument) targeting a path outside `workspacePaths`, `/tmp`, and `~/.gemini/antigravity`
+    # 3) `ask_question` (interactive user question)
+    requires_approval="$(echo "$input_json" | jq -r --arg home "$HOME" '
+        .workspacePaths as $ws
+        | if .toolCall.name == "run_command" then
+            (if .toolCall.args.BypassSandbox == true then "true" else "false" end)
+          elif .toolCall.name == "ask_question" then
+            "true"
+          elif (.toolCall.args.Path // "") != "" then
+            (.toolCall.args.Path) as $p
+            | if (
+                ($p | startswith("/tmp/")) or ($p == "/tmp") or
+                ($p | startswith($home + "/.gemini/antigravity/")) or
+                any($ws[]?; $p == . or ($p | startswith(. + "/")))
+              ) then "false" else "true" end
+          else
+            "false"
+          end
+    ' 2>/dev/null || echo "false")"
+
+    if [[ "$requires_approval" == "true" ]]; then
+        tool_detail="$(echo "$input_json" | jq -r '
+            .toolCall.args
+            | if .CommandLine then "Command: " + .CommandLine
+              elif .questions then "Question: " + (.questions[0].question // (tojson))
+              elif .Path then "Path: " + .Path
+              else (tojson)
+              end
+        ' 2>/dev/null || true)"
+
+        title="${project_name:+[$project_name] }Approval Required: ${tool_name}"
+        message="${tool_detail}"
+        if [[ -n "$user_input" ]]; then
+            message="${message}"$'\n\n'"---"$'\n'"Prompt: ${user_input}"
+        fi
+
+        log "INFO" "Sending Antigravity approval notification: title=${title}"
+        send_gotify || true
+
+        if [[ "$tool_name" == "ask_question" ]]; then
+            echo '{"decision": "allow"}' >&3
+        else
+            echo '{"decision": "ask"}' >&3
+        fi
+    else
+        echo '{"decision": "allow"}' >&3
+    fi
+    exit 0
+fi
+
+# 2. Stop (Task Completion / Error) / 任务完成与错误事件
+reason="$(echo "$input_json" | jq -r '.terminationReason // "UNKNOWN"')"
+fully_idle="$(echo "$input_json" | jq -r 'if .fullyIdle == false then "false" else "true" end')"
+error_msg="$(echo "$input_json" | jq -r '.error // empty')"
+
+# Skip notification if canceled by user, or if background tasks/subagents are still running (`fullyIdle == false`).
+# 用户取消，或后台仍有命令/子任务在运行（尚未真正完成）时不发送通知。
 if [[ "$reason" == "USER_CANCELED" ]]; then
     echo '{"decision": "stop"}' >&3
     exit 0
 fi
 
-workspace="$(echo "$input_json" | jq -r '.workspacePaths[0] // empty')"
-project_name="${workspace:+$(basename "$workspace")}"
-user_input="$(echo "$input_json" | jq -r '.lastUserInput // "-"')"
-error_msg="$(echo "$input_json" | jq -r '.error // empty')"
+if [[ "$fully_idle" == "false" && "$reason" != "ERROR" && -z "$error_msg" ]]; then
+    log "INFO" "Skipping notification: background tasks still running (fullyIdle=false)"
+    echo '{"decision": "stop"}' >&3
+    exit 0
+fi
+
+transcript_path="$(echo "$input_json" | jq -r '.transcriptPath // empty')"
+assistant_reply="$(extract_last_reply "$transcript_path")"
 
 if [[ "$reason" == "ERROR" || -n "$error_msg" ]]; then
     title="${project_name:+[$project_name] }Task Error"
-    message="Status: ${reason}"$'\n'"Prompt: ${user_input}"${error_msg:+$'\n'"Error: ${error_msg}"}
+    body="${error_msg:-Status: ${reason}}"
+    if [[ -n "$assistant_reply" ]]; then
+        body="${assistant_reply}"$'\n\n'"Error: ${body}"
+    fi
 else
     title="${project_name:+[$project_name] }Task Completed"
-    message="Prompt: ${user_input}"
+    body="${assistant_reply}"
+fi
+
+if [[ -n "$body" && -n "$user_input" ]]; then
+    message="${body}"$'\n\n'"---"$'\n'"Prompt: ${user_input}"
+elif [[ -n "$body" ]]; then
+    message="${body}"
+else
+    message="Prompt: ${user_input:--}"
 fi
 
 log "INFO" "Sending Antigravity notification: title=${title}"
