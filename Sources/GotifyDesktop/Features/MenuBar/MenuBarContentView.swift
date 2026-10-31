@@ -9,6 +9,7 @@ final class AppWindowCoordinator: NSObject {
     static let shared = AppWindowCoordinator()
 
     private var mainWindow: NSWindow?
+    private var fallbackRootViewProvider: (() -> AnyView)?
     private var cancellables = Set<AnyCancellable>()
     private var windowDiscoveryCancellable: AnyCancellable?
 
@@ -34,11 +35,10 @@ final class AppWindowCoordinator: NSObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
                 guard let self,
-                      let closingWindow = notification.object as? NSWindow,
-                      self.isSettingsWindow(closingWindow)
+                      let closingWindow = notification.object as? NSWindow
                 else { return }
-                DispatchQueue.main.async {
-                    self.updateActivationPolicy(ignoringClosingWindow: closingWindow)
+                if closingWindow === self.mainWindow {
+                    self.mainWindow = nil
                 }
             }
             .store(in: &cancellables)
@@ -58,9 +58,20 @@ final class AppWindowCoordinator: NSObject {
         }
     }
 
+    func configureFallbackRootView(_ provider: @escaping () -> AnyView) {
+        fallbackRootViewProvider = provider
+    }
+
     func startObserving() {
         for window in NSApp?.windows ?? [] {
             attachMainWindowIfCandidate(window)
+        }
+    }
+
+    func ensureMainWindowPresentedAtLaunch() {
+        startObserving()
+        if !hasMainWindow {
+            openMainWindow()
         }
     }
 
@@ -68,6 +79,13 @@ final class AppWindowCoordinator: NSObject {
         window.title.contains("设置")
             || window.title.contains("Settings")
             || window.title.contains("Preferences")
+    }
+
+    private func configureCloseButton(for window: NSWindow) {
+        if let closeButton = window.standardWindowButton(.closeButton) {
+            closeButton.target = self
+            closeButton.action = #selector(handleCloseButton(_:))
+        }
     }
 
     private func attachMainWindowIfCandidate(_ window: NSWindow) {
@@ -86,6 +104,8 @@ final class AppWindowCoordinator: NSObject {
                     window.close()
                     self?.openMainWindow()
                 }
+            } else {
+                configureCloseButton(for: mainWindow)
             }
             return
         }
@@ -99,28 +119,11 @@ final class AppWindowCoordinator: NSObject {
             window.setContentSize(NSSize(width: 1_080, height: 720))
             window.center()
         }
-        if let closeButton = window.standardWindowButton(.closeButton) {
-            closeButton.target = self
-            closeButton.action = #selector(handleCloseButton(_:))
-        }
+        configureCloseButton(for: window)
     }
 
     @objc private func handleCloseButton(_ sender: Any?) {
         mainWindow?.orderOut(nil)
-        updateActivationPolicy(ignoringClosingWindow: nil)
-    }
-
-    private func updateActivationPolicy(ignoringClosingWindow: NSWindow?) {
-        let hasVisibleAppWindow = (NSApp?.windows ?? []).contains { window in
-            guard window !== ignoringClosingWindow,
-                  window.canBecomeMain,
-                  !window.className.contains("StatusBar")
-            else { return false }
-            return window.isVisible || window.isMiniaturized
-        }
-        if !hasVisibleAppWindow, NSApp.activationPolicy() != .accessory {
-            NSApp.setActivationPolicy(.accessory)
-        }
     }
 
     private func ensureRegularActivationPolicy() {
@@ -132,6 +135,7 @@ final class AppWindowCoordinator: NSObject {
     func openMainWindow() {
         ensureRegularActivationPolicy()
         if let mainWindow {
+            configureCloseButton(for: mainWindow)
             if mainWindow.isMiniaturized {
                 mainWindow.deminiaturize(nil)
             }
@@ -147,6 +151,25 @@ final class AppWindowCoordinator: NSObject {
             candidate.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
+        }
+        // Ask SwiftUI's AppDelegate to materialize the initial WindowGroup window if restoration suppressed it.
+        _ = NSApp.delegate?.applicationShouldHandleReopen?(NSApp, hasVisibleWindows: false)
+        startObserving()
+        if let mainWindow {
+            mainWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        // Final deterministic fallback: construct the main NSWindow directly if SwiftUI still has not created one.
+        if let fallbackRootViewProvider {
+            let controller = NSHostingController(rootView: fallbackRootViewProvider())
+            let window = NSWindow(contentViewController: controller)
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            window.title = Localized.string("app.name")
+            window.setContentSize(NSSize(width: 1_080, height: 720))
+            window.center()
+            attachMainWindowIfCandidate(window)
+            window.makeKeyAndOrderFront(nil)
         }
         NSApp.activate(ignoringOtherApps: true)
     }

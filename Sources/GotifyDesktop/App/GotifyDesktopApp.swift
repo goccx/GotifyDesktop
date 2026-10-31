@@ -4,16 +4,27 @@ import SwiftUI
 
 @MainActor
 final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
+    override init() {
+        super.init()
+        // Prevent macOS `com.apple.appkit.restoration_storage` (`NSPersistentUIManager`) from restoring
+        // a "0 visible windows" snapshot when the app was previously quit/killed after `orderOut(nil)`.
+        UserDefaults.standard.register(defaults: ["NSQuitAlwaysKeepsWindows": false])
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+    }
+
     func applicationWillFinishLaunching(_ notification: Notification) {
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+        NSWindow.allowsAutomaticWindowTabbing = false
         _ = AppWindowCoordinator.shared
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.disableRelaunchOnLogin()
         AppWindowCoordinator.shared.startObserving()
         // Register after SwiftUI.AppDelegate finishes its own launch setup so Dock click / `open -a`
         // (`kAEReopenApplication`) always routes through our single-window coordinator.
         DispatchQueue.main.async {
-            AppWindowCoordinator.shared.startObserving()
+            AppWindowCoordinator.shared.ensureMainWindowPresentedAtLaunch()
             NSAppleEventManager.shared().setEventHandler(
                 self,
                 andSelector: #selector(self.handleReopenAppleEvent(_:withReplyEvent:)),
@@ -109,6 +120,18 @@ private final class GotifyAppBootstrap: ObservableObject {
         self.notificationCoordinator = notificationCoordinator
         self.serverPreferences = serverPreferences
         self.menuBarController = menuBarController
+
+        AppWindowCoordinator.shared.configureFallbackRootView {
+            AnyView(
+                InboxView()
+                    .environmentObject(store)
+                    .environmentObject(preferences)
+                    .environmentObject(notificationPreferences)
+                    .environmentObject(notificationCoordinator)
+                    .environmentObject(serverPreferences)
+                    .environment(\.locale, preferences.language.locale)
+            )
+        }
 
         // This process-level task restores a verified opt-in even when the main window remains closed.
         Task { @MainActor in
