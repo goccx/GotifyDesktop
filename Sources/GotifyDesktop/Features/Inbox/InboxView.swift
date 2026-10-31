@@ -18,7 +18,7 @@ struct InboxView: View {
         // Async callbacks keep the page that rendered them; a later selection cannot retarget
         // an old footer or disappearance callback to another application.
         let page = selectedPage
-        NavigationView {
+        SplitNavigationContainer {
             SidebarView(
                 selection: $selection,
                 sources: sourceItems,
@@ -29,10 +29,7 @@ struct InboxView: View {
                     pendingBulkDeletePage = targetPage
                 }
             )
-            // A navigation column needs enough breathing room for real application names and
-            // the transient count. The bounded range keeps the reading canvas dominant.
-            .frame(minWidth: 210, idealWidth: 232, maxWidth: 260)
-
+        } detail: {
             ReadingCanvas(
                 timelineItems: messageStore.timelineItems(for: page),
                 page: page,
@@ -291,8 +288,12 @@ private struct SidebarView: View {
         // public AppKit introspection only; native selection, scrolling, keyboard navigation, and
         // accessibility remain owned by the table view.
         .introspect(.list(style: .sidebar), on: .macOS(.v12, .v13, .v14, .v15, .v26)) { tableView in
-            tableView.selectionHighlightStyle = .none
-            tableView.usesAlternatingRowBackgroundColors = false
+            if tableView.selectionHighlightStyle != .none {
+                tableView.selectionHighlightStyle = .none
+            }
+            if tableView.usesAlternatingRowBackgroundColors {
+                tableView.usesAlternatingRowBackgroundColors = false
+            }
         }
         .navigationTitle(Localized.string("app.name"))
         .accessibilityIdentifier("sidebar-navigation")
@@ -574,6 +575,7 @@ private struct MessageListView: View {
                             NextMessagePageSentinel(isEnabled: isPresented, loadNextPage: loadNextPage)
                         }
                     }
+                    .compatibleHiddenListRowSeparator()
                 }
                 .listStyle(.inset)
                 .accessibilityIdentifier("message-timeline-list")
@@ -844,8 +846,7 @@ private struct MessageRowContent: View, Equatable {
                     .foregroundStyle(.secondary)
                     // Reserve identical summary height for short and long messages to avoid
                     // variable-height remeasurement when the native list appends a page.
-                    .lineLimit(2)
-                    .frame(minHeight: 34, alignment: .topLeading)
+                    .compatibleReservedTwoLineLimit()
                 Text("\(message.sourceName) · \(MessageAbsoluteTimeFormat.listTime(message.receivedAt, locale: locale))")
                     // A slightly larger native text style keeps the full timestamp readable.
                     .font(.callout)

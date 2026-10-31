@@ -2,57 +2,72 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Transparently forwards all `NSWindowDelegate` callbacks to SwiftUI's internal window delegate
-/// while intercepting `windowShouldClose(_:)` so closing the main window hides it (`orderOut`)
-/// instead of tearing down the SwiftUI window scene.
-@MainActor
-private final class MainWindowDelegateProxy: NSObject, NSWindowDelegate {
-    weak var originalDelegate: (any NSWindowDelegate)?
-
-    init(originalDelegate: (any NSWindowDelegate)?) {
-        self.originalDelegate = originalDelegate
-    }
-
-    override func responds(to aSelector: Selector!) -> Bool {
-        if aSelector == #selector(NSWindowDelegate.windowShouldClose(_:)) {
-            return true
-        }
-        return super.responds(to: aSelector) || (originalDelegate?.responds(to: aSelector) ?? false)
-    }
-
-    override func forwardingTarget(for aSelector: Selector!) -> Any? {
-        if let originalDelegate, originalDelegate.responds(to: aSelector) {
-            return originalDelegate
-        }
-        return super.forwardingTarget(for: aSelector)
-    }
-
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        sender.orderOut(nil)
-        return false
-    }
-}
-
 /// Coordinates single-instance main window activation and native Settings window presentation
-/// across macOS 12+ without duplicating windows.
+/// across macOS 12+ without touching SwiftUI's internal `NSWindow.delegate`.
 @MainActor
 final class AppWindowCoordinator: NSObject {
     static let shared = AppWindowCoordinator()
 
     private var mainWindow: NSWindow?
-    private var delegateProxy: MainWindowDelegateProxy?
+    private var cancellables = Set<AnyCancellable>()
+    private var windowDiscoveryCancellable: AnyCancellable?
 
-    func attachMainWindowIfNeeded(_ window: NSWindow?) {
-        guard let window else { return }
-        if window !== mainWindow {
-            mainWindow = window
-            window.isReleasedWhenClosed = false
+    override init() {
+        super.init()
+        NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                self?.attachMainWindowIfCandidate(window)
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSWindow.didBecomeMainNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                self?.attachMainWindowIfCandidate(window)
+            }
+            .store(in: &cancellables)
+
+        windowDiscoveryCancellable = NotificationCenter.default.publisher(for: NSWindow.didUpdateNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] notification in
+                guard let self, self.mainWindow == nil, let window = notification.object as? NSWindow else { return }
+                self.attachMainWindowIfCandidate(window)
+            }
+    }
+
+    func startObserving() {
+        for window in NSApp?.windows ?? [] {
+            attachMainWindowIfCandidate(window)
         }
-        if !(window.delegate is MainWindowDelegateProxy) {
-            let proxy = MainWindowDelegateProxy(originalDelegate: window.delegate)
-            delegateProxy = proxy
-            window.delegate = proxy
+    }
+
+    private func attachMainWindowIfCandidate(_ window: NSWindow) {
+        guard window.canBecomeMain,
+              !window.className.contains("StatusBar"),
+              !window.title.contains("设置"),
+              !window.title.contains("Settings"),
+              !window.title.contains("Preferences")
+        else { return }
+        guard window !== mainWindow else { return }
+        mainWindow = window
+        windowDiscoveryCancellable = nil
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 900, height: 600)
+        if window.frame.width < 900 || window.frame.height < 600 {
+            window.setContentSize(NSSize(width: 1_080, height: 720))
+            window.center()
         }
+        if let closeButton = window.standardWindowButton(.closeButton) {
+            closeButton.target = self
+            closeButton.action = #selector(handleCloseButton(_:))
+        }
+    }
+
+    @objc private func handleCloseButton(_ sender: Any?) {
+        mainWindow?.orderOut(nil)
     }
 
     func openMainWindow() {
@@ -62,7 +77,7 @@ final class AppWindowCoordinator: NSObject {
             return
         }
         if let candidate = NSApp.windows.first(where: { $0.canBecomeMain && !$0.className.contains("StatusBar") }) {
-            attachMainWindowIfNeeded(candidate)
+            attachMainWindowIfCandidate(candidate)
             candidate.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -79,23 +94,6 @@ final class AppWindowCoordinator: NSObject {
         }
         if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
             _ = NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-        }
-    }
-}
-
-/// Bridges the SwiftUI root view to its hosting `NSWindow` so `AppWindowCoordinator` can manage it.
-struct MainWindowAccessor: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            AppWindowCoordinator.shared.attachMainWindowIfNeeded(view.window)
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async {
-            AppWindowCoordinator.shared.attachMainWindowIfNeeded(nsView.window)
         }
     }
 }
@@ -119,11 +117,13 @@ final class MenuBarStatusController: NSObject, ObservableObject, NSMenuDelegate 
         self.preferences = preferences
 
         if NSApp != nil, NSApp.isRunning {
+            AppWindowCoordinator.shared.startObserving()
             installStatusItemIfNeeded()
         } else {
             NotificationCenter.default.publisher(for: NSApplication.didFinishLaunchingNotification)
                 .receive(on: RunLoop.main)
                 .sink { [weak self] _ in
+                    AppWindowCoordinator.shared.startObserving()
                     self?.installStatusItemIfNeeded()
                 }
                 .store(in: &cancellables)

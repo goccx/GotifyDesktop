@@ -61,8 +61,6 @@ struct GotifyDesktopApp: App {
     var body: some Scene {
         WindowGroup(Localized.string("app.name")) {
             InboxView()
-                .background(MainWindowAccessor())
-                .frame(minWidth: 900, idealWidth: 1_080, minHeight: 600, idealHeight: 720)
                 .environmentObject(messageStore)
                 .environmentObject(preferences)
                 .environmentObject(notificationPreferences)

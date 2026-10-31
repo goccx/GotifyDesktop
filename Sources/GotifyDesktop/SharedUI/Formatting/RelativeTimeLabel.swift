@@ -20,18 +20,12 @@ struct RelativeTimeLabel: View {
 
     /// Foundation owns pluralization, locale grammar, future dates, and calendar-boundary behavior.
     private func relativeText(referenceDate: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = locale
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: referenceDate)
+        RelativeDateTimeFormatterCache.string(for: date, relativeTo: referenceDate, locale: locale, unitsStyle: .abbreviated)
     }
 
     /// VoiceOver receives an unabridged version instead of reading a compact unit ambiguously.
     private func accessibilityText(referenceDate: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = locale
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: referenceDate)
+        RelativeDateTimeFormatterCache.string(for: date, relativeTo: referenceDate, locale: locale, unitsStyle: .full)
     }
 
     /// The compact label keeps the list calm; the standard macOS hover affordance exposes the exact time.
@@ -112,5 +106,40 @@ private struct RelativeTimeTimelineSchedule: TimelineSchedule {
                 604_800
             }
         }
+    }
+}
+
+/// Caches `RelativeDateTimeFormatter` instances per locale and unit style so list row rendering
+/// does not allocate new ICU formatters on every SwiftUI body evaluation.
+private enum RelativeDateTimeFormatterCache {
+    private struct Key: Hashable {
+        let localeIdentifier: String
+        let unitsStyleRawValue: Int
+    }
+
+    private static let lock = NSLock()
+    private static var formatters: [Key: RelativeDateTimeFormatter] = [:]
+
+    static func string(
+        for date: Date,
+        relativeTo referenceDate: Date,
+        locale: Locale,
+        unitsStyle: RelativeDateTimeFormatter.UnitsStyle
+    ) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let key = Key(localeIdentifier: locale.identifier, unitsStyleRawValue: unitsStyle.rawValue)
+        let formatter: RelativeDateTimeFormatter
+        if let existing = formatters[key] {
+            formatter = existing
+        } else {
+            let created = RelativeDateTimeFormatter()
+            created.locale = locale
+            created.unitsStyle = unitsStyle
+            formatters[key] = created
+            formatter = created
+        }
+        return formatter.localizedString(for: date, relativeTo: referenceDate)
     }
 }
