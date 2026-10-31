@@ -51,6 +51,13 @@ final class AppWindowCoordinator: NSObject {
             }
     }
 
+    var hasMainWindow: Bool {
+        if mainWindow != nil { return true }
+        return (NSApp?.windows ?? []).contains {
+            $0.canBecomeMain && !$0.className.contains("StatusBar") && !isSettingsWindow($0)
+        }
+    }
+
     func startObserving() {
         for window in NSApp?.windows ?? [] {
             attachMainWindowIfCandidate(window)
@@ -176,17 +183,13 @@ final class MenuBarStatusController: NSObject, ObservableObject, NSMenuDelegate 
         self.messageStore = messageStore
         self.preferences = preferences
 
-        if NSApp != nil, NSApp.isRunning {
+        // `GotifyAppBootstrap.init()` runs while `didFinishLaunchingNotification` is already being
+        // dispatched by AppKit (before `NSApp.isRunning` turns true). Scheduling on the main queue
+        // guarantees both status-item installation and initial window attachment always execute.
+        AppWindowCoordinator.shared.startObserving()
+        DispatchQueue.main.async { [weak self] in
             AppWindowCoordinator.shared.startObserving()
-            installStatusItemIfNeeded()
-        } else {
-            NotificationCenter.default.publisher(for: NSApplication.didFinishLaunchingNotification)
-                .receive(on: RunLoop.main)
-                .sink { [weak self] _ in
-                    AppWindowCoordinator.shared.startObserving()
-                    self?.installStatusItemIfNeeded()
-                }
-                .store(in: &cancellables)
+            self?.installStatusItemIfNeeded()
         }
     }
 

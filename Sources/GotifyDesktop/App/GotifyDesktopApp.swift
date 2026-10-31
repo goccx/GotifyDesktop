@@ -4,10 +4,16 @@ import SwiftUI
 
 @MainActor
 final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        _ = AppWindowCoordinator.shared
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppWindowCoordinator.shared.startObserving()
         // Register after SwiftUI.AppDelegate finishes its own launch setup so Dock click / `open -a`
         // (`kAEReopenApplication`) always routes through our single-window coordinator.
         DispatchQueue.main.async {
+            AppWindowCoordinator.shared.startObserving()
             NSAppleEventManager.shared().setEventHandler(
                 self,
                 andSelector: #selector(self.handleReopenAppleEvent(_:withReplyEvent:)),
@@ -29,8 +35,11 @@ final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        AppWindowCoordinator.shared.openMainWindow()
-        return false
+        if AppWindowCoordinator.shared.hasMainWindow {
+            AppWindowCoordinator.shared.openMainWindow()
+            return false
+        }
+        return true
     }
 
     func application(_ app: NSApplication, shouldSaveApplicationState coder: NSCoder) -> Bool {

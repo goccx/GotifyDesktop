@@ -42,18 +42,8 @@ final class GotifyNotificationCoordinator: NSObject, ObservableObject, GotifyMes
         super.init()
         // AppKit suppresses a frontmost app by default; Gotify banners must stay useful while its window is open.
         notificationCenter.delegate = self
-        if NSApp != nil, NSApp.isRunning {
-            registerWithSystemNotificationCenterIfNeeded()
-        } else {
-            NotificationCenter.default.addObserver(
-                forName: NSApplication.didFinishLaunchingNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.registerWithSystemNotificationCenterIfNeeded()
-                }
-            }
+        DispatchQueue.main.async { [weak self] in
+            self?.registerWithSystemNotificationCenterIfNeeded()
         }
     }
 
