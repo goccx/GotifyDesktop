@@ -1,4 +1,4 @@
-# GotifyDesktop
+# Gotify Desktop (GotifyDesktop)
 
 [![Release](https://img.shields.io/github/v/release/goccx/GotifyDesktop?label=Release)](https://github.com/goccx/GotifyDesktop/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-macOS%2014%2B%20(Apple%20Silicon%20%26%20Intel)-blue)](https://github.com/goccx/GotifyDesktop/releases/latest)
@@ -6,9 +6,9 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A lightweight native macOS desktop and menu bar client for [Gotify](https://gotify.net/). Browse messages by application, receive real-time updates over WebSocket, and get native macOS notification banners with custom alert sounds.
+**Gotify Desktop** (`GotifyDesktop`) is a lightweight native macOS desktop and menu bar client for [Gotify](https://gotify.net/). Browse messages by application, receive real-time updates over WebSocket, and get native macOS notification banners with custom alert sounds.
 
-GotifyDesktop focuses on lightweight, real-time notification reading: messages belong to your Gotify server and are held only in process memory while the app is running. There is no local message database, and closing the main window keeps the app resident in the macOS menu bar to continue receiving notifications in the background.
+Gotify Desktop focuses on lightweight, real-time notification reading: messages belong to your Gotify server and are held only in process memory while the app is running. There is no local message database, and closing the main window keeps the app resident in the macOS menu bar to continue receiving notifications in the background.
 
 ## Download & Install
 

@@ -1,4 +1,4 @@
-# GotifyDesktop
+# Gotify Desktop (GotifyDesktop)
 
 [![Release](https://img.shields.io/github/v/release/goccx/GotifyDesktop?label=Release)](https://github.com/goccx/GotifyDesktop/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-macOS%2014%2B%20(Apple%20Silicon%20%26%20Intel)-blue)](https://github.com/goccx/GotifyDesktop/releases/latest)
@@ -6,9 +6,9 @@
 
 [English](README.md) | 简体中文
 
-轻量的原生 macOS [Gotify](https://gotify.net/) 桌面与菜单栏客户端，支持按应用（Application）来源分类阅读消息、通过 WebSocket 实时接收推送，并提供 macOS 原生系统通知横幅与提示音。
+**Gotify Desktop**（`GotifyDesktop`）是一款轻量的原生 macOS [Gotify](https://gotify.net/) 桌面与菜单栏客户端，支持按应用（Application）来源分类阅读消息、通过 WebSocket 实时接收推送，并提供 macOS 原生系统通知横幅与提示音。
 
-GotifyDesktop 专注于轻量化实时通知接收：消息属于你的 Gotify 服务端，客户端仅在运行期间于内存中展示和通知，不建立本地消息数据库，关闭主窗口后可继续驻留系统菜单栏保持后台接收。
+Gotify Desktop 专注于轻量化实时通知接收：消息属于你的 Gotify 服务端，客户端仅在运行期间于内存中展示和通知，不建立本地消息数据库，关闭主窗口后可继续驻留系统菜单栏保持后台接收。
 
 ## 下载与安装
 
