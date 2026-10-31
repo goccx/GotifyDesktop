@@ -338,6 +338,7 @@ private struct SidebarView: View {
     let clientToken: String
     let reselectCurrentItem: () -> Void
     let requestBulkDelete: (MessagePage) -> Void
+    @State private var clickTarget = SidebarTableClickTarget()
 
     var body: some View {
         List(selection: $selection) {
@@ -346,14 +347,6 @@ private struct SidebarView: View {
                 systemImage: "tray.full",
                 count: newMessageCount,
                 isSelected: selection == .allMessages
-            )
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    if selection == .allMessages {
-                        reselectCurrentItem()
-                    }
-                }
             )
             .tag(SidebarSelection.allMessages)
             .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
@@ -376,14 +369,6 @@ private struct SidebarView: View {
                     count: newMessageCountsBySource[source.id] ?? 0,
                     clientToken: clientToken,
                     isSelected: selection == item
-                )
-                .contentShape(Rectangle())
-                .simultaneousGesture(
-                    TapGesture().onEnded {
-                        if selection == item {
-                            reselectCurrentItem()
-                        }
-                    }
                 )
                 .tag(item)
                 .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
@@ -410,9 +395,39 @@ private struct SidebarView: View {
             if tableView.usesAlternatingRowBackgroundColors {
                 tableView.usesAlternatingRowBackgroundColors = false
             }
+            clickTarget.attach(to: tableView, onRowClick: reselectCurrentItem)
         }
         .navigationTitle(Localized.string("app.name"))
         .accessibilityIdentifier("sidebar-navigation")
+    }
+}
+
+/// Forwards native NSTableView row clicks so clicking an already-selected sidebar row can exit message detail
+/// without attaching SwiftUI gesture recognizers that would swallow row selection clicks.
+@MainActor
+private final class SidebarTableClickTarget: NSObject {
+    private weak var forwardedTarget: AnyObject?
+    private var forwardedAction: Selector?
+    private var onRowClick: (() -> Void)?
+
+    func attach(to tableView: NSTableView, onRowClick: @escaping () -> Void) {
+        self.onRowClick = onRowClick
+        if tableView.target !== self {
+            forwardedTarget = tableView.target
+            forwardedAction = tableView.action
+            tableView.target = self
+            tableView.action = #selector(handleRowClick(_:))
+        }
+    }
+
+    @objc
+    private func handleRowClick(_ sender: NSTableView) {
+        if let forwardedAction, let forwardedTarget {
+            _ = forwardedTarget.perform(forwardedAction, with: sender)
+        }
+        if sender.clickedRow >= 0 {
+            onRowClick?()
+        }
     }
 }
 
@@ -654,7 +669,7 @@ private struct MessageListView: View {
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
-                if isPresented && (newMessageCount > 0 || hasPendingLiveMessages) {
+                if newMessageCount > 0 || hasPendingLiveMessages {
                     newMessagesTopBar(proxy: proxy)
                     Divider()
                 }
@@ -690,23 +705,29 @@ private struct MessageListView: View {
                 // Explicit top-bar reveal keeps the newest arrival at the top of the feed visible.
                 .onChange(of: scrollAnchorID) { anchorID in
                     guard let anchorID else { return }
-                    if isPresented {
-                        proxy.scrollTo(timelineItems.first?.id ?? "message-\(anchorID)", anchor: .top)
-                    }
                     consumeScrollAnchor(anchorID)
+                    if isPresented {
+                        DispatchQueue.main.async {
+                            proxy.scrollTo(timelineItems.first?.id ?? "message-\(anchorID)", anchor: .top)
+                        }
+                    }
                 }
             }
         }
     }
 
     /// Top bar for unread / pending live messages: clicking the main area reveals pending messages
-    /// and scrolls to the top while keeping each message unread until its detail view is opened;
-    /// the trailing action explicitly marks all messages in the current scope as viewed.
+    /// and scrolls to the top (or clears the bar if all messages are already revealed);
+    /// opening an individual message's detail view clears only that single message's unread dot.
     private func newMessagesTopBar(proxy: ScrollViewProxy) -> some View {
         HStack(spacing: 0) {
             Button {
+                let hadPending = hasPendingLiveMessages
                 Task {
                     await revealPendingLiveMessages()
+                    if !hadPending {
+                        markAllMessagesViewed()
+                    }
                     if let firstID = timelineItems.first?.id {
                         proxy.scrollTo(firstID, anchor: .top)
                     }

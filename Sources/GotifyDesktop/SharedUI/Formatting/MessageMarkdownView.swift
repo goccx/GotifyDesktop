@@ -166,10 +166,14 @@ enum MessageMarkdownParser {
     }
 
     /// Produces a compact inline `AttributedString` for the 2-line message list preview,
-    /// stripping block-level syntax (`###`, fences, `---`, list markers) while preserving inline bold & code.
+    /// stripping block-level syntax (`###`, fences, `---`, list markers) and links while preserving inline bold & code.
     static func summaryAttributedString(from rawText: String) -> AttributedString {
         let collapsed = collapseBlockSyntaxForSummary(from: rawText)
-        return inlineAttributedString(from: collapsed, styleCodeBackground: false)
+        var attributed = inlineAttributedString(from: collapsed, styleCodeBackground: false)
+        for run in attributed.runs where run.link != nil {
+            attributed[run.range].link = nil
+        }
+        return attributed
     }
 
     /// Produces a clean plain-text summary (for 1-line fallback titles, dialogs, and system banners)
@@ -628,7 +632,6 @@ struct MessageMarkdownView: View {
                 blockView(for: block)
             }
         }
-        .textSelection(.enabled)
         .environment(\.openURL, OpenURLAction { url in
             guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
                 return .discarded
@@ -645,6 +648,7 @@ struct MessageMarkdownView: View {
         case let .heading(level, headingText):
             Text(MessageMarkdownParser.inlineAttributedString(from: headingText))
                 .font(headingFont(for: level))
+                .textSelection(.enabled)
                 .padding(.top, level <= 2 ? 4 : 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -652,6 +656,7 @@ struct MessageMarkdownView: View {
             Text(MessageMarkdownParser.inlineAttributedString(from: paragraphText))
                 .font(.body)
                 .lineSpacing(3)
+                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         case let .unorderedListItem(indent, itemText):
@@ -662,6 +667,7 @@ struct MessageMarkdownView: View {
                 Text(MessageMarkdownParser.inlineAttributedString(from: itemText))
                     .font(.body)
                     .lineSpacing(2)
+                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.leading, CGFloat(indent) * 16)
@@ -674,23 +680,25 @@ struct MessageMarkdownView: View {
                 Text(MessageMarkdownParser.inlineAttributedString(from: itemText))
                     .font(.body)
                     .lineSpacing(2)
+                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.leading, CGFloat(indent) * 16)
 
         case let .blockquote(quoteText):
-            HStack(alignment: .top, spacing: 10) {
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(Color.secondary.opacity(0.45))
-                    .frame(width: 3)
-                Text(MessageMarkdownParser.inlineAttributedString(from: quoteText))
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.vertical, 2)
+            Text(MessageMarkdownParser.inlineAttributedString(from: quoteText))
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .lineSpacing(2)
+                .textSelection(.enabled)
+                .padding(.leading, 13)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(Color.secondary.opacity(0.45))
+                        .frame(width: 3)
+                }
+                .padding(.vertical, 2)
 
         case let .codeBlock(language, code):
             VStack(alignment: .leading, spacing: 6) {
@@ -699,12 +707,11 @@ struct MessageMarkdownView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
-                ScrollView(.horizontal, showsIndicators: true) {
-                    Text(verbatim: code)
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                Text(verbatim: code)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -748,6 +755,7 @@ struct MessageMarkdownView: View {
             ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
                 Text(MessageMarkdownParser.inlineAttributedString(from: cell))
                     .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
+                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
