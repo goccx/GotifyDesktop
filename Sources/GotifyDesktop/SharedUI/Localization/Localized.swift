@@ -14,6 +14,24 @@ enum Localized {
         String.localizedStringWithFormat(string(key), value)
     }
 
+    /// Resolves the resource bundle inside a packaged macOS `.app` (`Contents/Resources/`) first
+    /// because SwiftPM's generated `Bundle.module` checks `Bundle.main.bundleURL` (the `.app` root,
+    /// where `codesign` forbids placing loose bundles) and the build machine's absolute path.
+    private static let packageBundle: Bundle = {
+        let bundleName = "GotifyDesktop_GotifyDesktop.bundle"
+        let candidates: [URL?] = [
+            Bundle.main.resourceURL?.appendingPathComponent(bundleName),
+            Bundle.main.bundleURL.appendingPathComponent(bundleName),
+            Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent(bundleName)
+        ]
+        for candidate in candidates {
+            if let url = candidate, let bundle = Bundle(url: url) {
+                return bundle
+            }
+        }
+        return Bundle.module
+    }()
+
     private static var selectedBundle: Bundle {
         let language = UserDefaults.standard.string(forKey: languagePreferenceKey)
         let resourceName: String?
@@ -25,10 +43,10 @@ enum Localized {
         }
 
         guard let resourceName,
-              let path = Bundle.module.path(forResource: resourceName.lowercased(), ofType: "lproj"),
+              let path = packageBundle.path(forResource: resourceName.lowercased(), ofType: "lproj"),
               let bundle = Bundle(path: path)
         else {
-            return .module
+            return packageBundle
         }
 
         return bundle
