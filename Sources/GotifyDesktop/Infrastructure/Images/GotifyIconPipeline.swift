@@ -7,6 +7,10 @@ enum GotifyIconPipeline {
         static let directoryName = "com.gotify.desktop/ApplicationIcons"
         /// A recovery guard only; normal replacement removes the prior app-image entry immediately.
         static let diskLimit = 50 * 1_024 * 1_024
+        /// Bounded in-memory LRU cache for decoded application icons so NSTableView cell recycling
+        /// on macOS 12+ resolves icons synchronously without flashing the placeholder square.
+        static let memoryCostLimit = 16 * 1_024 * 1_024
+        static let memoryCountLimit = 128
     }
 
     static let cacheDirectory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -24,8 +28,10 @@ enum GotifyIconPipeline {
         dataCache?.sizeLimit = Configuration.diskLimit
         configuration.dataCache = dataCache
         configuration.dataCachePolicy = .storeOriginalData
-        // Decoded full-resolution images must not become an unbounded process-wide cache.
-        configuration.imageCache = nil
+        configuration.imageCache = ImageCache(
+            costLimit: Configuration.memoryCostLimit,
+            countLimit: Configuration.memoryCountLimit
+        )
         return ImagePipeline(configuration: configuration)
     }()
 

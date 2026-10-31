@@ -911,14 +911,26 @@ private struct GotifyApplicationIcon: View {
     let size: CGFloat
 
     var body: some View {
-        LazyImage(request: authenticatedRequest) { state in
-            if let image = state.image {
-                image.resizable().scaledToFill()
+        let request = authenticatedRequest
+        Group {
+            if let request, let cached = GotifyIconPipeline.pipeline.cache[request] {
+                Image(nsImage: cached.image)
+                    .resizable()
+                    .scaledToFill()
             } else {
-                Image(systemName: "app.fill").foregroundStyle(.secondary)
+                LazyImage(request: request) { state in
+                    if let image = state.image {
+                        image.resizable().scaledToFill()
+                    } else if let request, let cached = GotifyIconPipeline.pipeline.cache[request] {
+                        Image(nsImage: cached.image).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "app.fill").foregroundStyle(.secondary)
+                    }
+                }
+                .pipeline(GotifyIconPipeline.pipeline)
+                .onDisappear(.lowerPriority)
             }
         }
-        .pipeline(GotifyIconPipeline.pipeline)
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
         .accessibilityHidden(true)
