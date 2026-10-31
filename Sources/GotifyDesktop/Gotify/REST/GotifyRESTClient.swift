@@ -5,6 +5,8 @@ import GotifyGeneratedClient
 protocol GotifyRESTClient: Sendable {
     func fetchApplications() async throws -> [GotifyApplication]
     func fetchMessages(page: MessagePage, limit: Int, since: Int64?, applications: [Int64: GotifyApplication]) async throws -> GotifyMessagePage
+    func deleteMessage(id: Int64) async throws
+    func deleteMessages(for page: MessagePage) async throws
 }
 
 /// Live application metadata is sourced from `/application`; it contains no token or message content.
@@ -53,6 +55,21 @@ struct GeneratedGotifyRESTClient: GotifyRESTClient {
                 url: nil
             )
         }, next: response.paging.next, nextSince: response.paging.next == nil ? nil : response.paging.since)
+    }
+
+    func deleteMessage(id: Int64) async throws {
+        let configuration = GotifyGeneratedAPI.configuration(serverURL: serverURL, clientToken: clientToken)
+        try await MessageAPI.deleteMessage(id: id, apiConfiguration: configuration)
+    }
+
+    func deleteMessages(for page: MessagePage) async throws {
+        let configuration = GotifyGeneratedAPI.configuration(serverURL: serverURL, clientToken: clientToken)
+        switch page {
+        case .all:
+            try await MessageAPI.deleteMessages(apiConfiguration: configuration)
+        case let .application(id):
+            try await MessageAPI.deleteAppMessages(id: id, apiConfiguration: configuration)
+        }
     }
 
     /// Application images are authenticated with the client token, so an application must never redirect it to another origin.

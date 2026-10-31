@@ -359,4 +359,83 @@ struct GotifyDesktopTests {
         _ = try GotifyDateCoding.decoder.decode(Sample.self, from: fractional)
         _ = try GotifyDateCoding.decoder.decode(Sample.self, from: wholeSecond)
     }
+
+    @Test
+    func deletingASingleMessageUpdatesBothAllAndApplicationPagesAndClearsAttention() async throws {
+        let store = MessageStore()
+        let first = GotifyMessage(id: 10, title: "First", body: "", sourceID: 7, sourceName: "backend", priority: 5, receivedAt: .now, url: nil)
+        let second = GotifyMessage(id: 11, title: "Second", body: "", sourceID: 7, sourceName: "backend", priority: 5, receivedAt: .now, url: nil)
+        let otherSource = GotifyMessage(id: 12, title: "Other", body: "", sourceID: 9, sourceName: "worker", priority: 5, receivedAt: .now, url: nil)
+
+        let appRequestID = try #require(await store.beginLoading(.application(7)))
+        await store.finishLoading(.application(7), requestID: appRequestID, result: GotifyMessagePage(messages: [], next: nil, nextSince: nil))
+
+        _ = await store.insertCurrentSessionMessages([first, second, otherSource])
+        await store.revealPendingLiveMessages(for: .all)
+        await store.revealPendingLiveMessages(for: .application(7))
+        #expect(store.newMessageCount == 3)
+        #expect(store.newMessageCount(for: 7) == 2)
+
+        await store.removeCurrentSessionMessage(id: 11, sourceID: 7)
+
+        #expect(store.messages(for: .all).map(\.id) == [12, 10])
+        #expect(store.messages(for: .application(7)).map(\.id) == [10])
+        #expect(store.newMessageCount == 2)
+        #expect(store.newMessageCount(for: 7) == 1)
+        #expect(!store.isNewMessage(11, sourceID: 7))
+    }
+
+    @Test
+    func deletingAllMessagesForASourceOrAllSourcesUpdatesLoadedSnapshotsAndAttention() async throws {
+        let store = MessageStore()
+        let sourceSevenA = GotifyMessage(id: 21, title: "A", body: "", sourceID: 7, sourceName: "backend", priority: 5, receivedAt: .now, url: nil)
+        let sourceSevenB = GotifyMessage(id: 22, title: "B", body: "", sourceID: 7, sourceName: "backend", priority: 5, receivedAt: .now, url: nil)
+        let sourceNine = GotifyMessage(id: 23, title: "C", body: "", sourceID: 9, sourceName: "worker", priority: 5, receivedAt: .now, url: nil)
+
+        let req7 = try #require(await store.beginLoading(.application(7)))
+        await store.finishLoading(.application(7), requestID: req7, result: GotifyMessagePage(messages: [], next: nil, nextSince: nil))
+        let req9 = try #require(await store.beginLoading(.application(9)))
+        await store.finishLoading(.application(9), requestID: req9, result: GotifyMessagePage(messages: [], next: nil, nextSince: nil))
+
+        _ = await store.insertCurrentSessionMessages([sourceSevenA, sourceSevenB, sourceNine])
+        await store.revealPendingLiveMessages(for: .all)
+        await store.revealPendingLiveMessages(for: .application(7))
+        await store.revealPendingLiveMessages(for: .application(9))
+
+        await store.removeCurrentSessionMessages(for: .application(7))
+
+        #expect(store.messages(for: .application(7)).isEmpty)
+        #expect(store.messages(for: .all).map(\.id) == [23])
+        #expect(store.newMessageCount(for: 7) == 0)
+        #expect(store.newMessageCount == 1)
+
+        await store.removeCurrentSessionMessages(for: .all)
+
+        #expect(store.messages(for: .all).isEmpty)
+        #expect(store.messages(for: .application(9)).isEmpty)
+        #expect(store.newMessageCount == 0)
+        #expect(store.newMessageCount(for: 9) == 0)
+    }
+
+    @Test
+    func deleteResponseSerializerAcceptsEmpty200BodyReturnedByGotifyDeleteEndpoints() throws {
+        let serverURL = try #require(URL(string: "https://gotify.example"))
+        let config = GotifyGeneratedAPI.configuration(serverURL: serverURL, clientToken: "test-token")
+        let response = try #require(
+            HTTPURLResponse(
+                url: serverURL.appending(path: "message/42"),
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Length": "0"]
+            )
+        )
+
+        let serialized = try config.dataResponseSerializer.serialize(
+            request: nil,
+            response: response,
+            data: Data(),
+            error: nil
+        )
+        #expect(serialized.isEmpty)
+    }
 }

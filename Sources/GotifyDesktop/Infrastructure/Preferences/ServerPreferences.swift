@@ -134,6 +134,18 @@ final class ServerPreferences: ObservableObject {
         try await sessionController.loadNextPage(for: sourceID)
     }
 
+    /// Deletes a single message on the server (`DELETE /message/{id}`) and removes it from process memory.
+    func deleteMessage(_ message: GotifyMessage) async throws {
+        guard let sessionController else { throw CancellationError() }
+        try await sessionController.deleteMessage(message)
+    }
+
+    /// Deletes all messages (`DELETE /message`) or an application's messages (`DELETE /application/{id}/message`).
+    func deleteMessages(for sourceID: Int64?) async throws {
+        guard let sessionController else { throw CancellationError() }
+        try await sessionController.deleteMessages(for: sourceID)
+    }
+
     /// A verified configuration is retained automatically; the token reaches the preferences file only as AES-GCM ciphertext.
     private func persistConfiguration(serverURL: String, token: String) -> Bool {
         do {

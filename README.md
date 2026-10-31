@@ -23,19 +23,19 @@ Requires **macOS 14.0 (Sonoma)** or later. Choose the installer matching your Ma
 
 🔗 [View All Releases & Changelog (GitHub Releases)](https://github.com/goccx/GotifyDesktop/releases)
 
-### Installation & First Launch
+### First Launch
 
-1. Download the `.dmg` for your architecture, open it, and drag `GotifyDesktop.app` into the `Applications` folder.
-2. Because this open-source project is distributed with an ad-hoc signature (without a paid Apple Developer ID certificate or notarization), if macOS Gatekeeper warns that the developer cannot be verified on first launch, **right-click the app in Finder and choose Open**, or run the following command in Terminal to clear the quarantine attribute:
-   ```sh
-   xattr -cr /Applications/GotifyDesktop.app
-   ```
+After dragging `GotifyDesktop.app` into `Applications`, if macOS shows **"Apple could not verify GotifyDesktop is free of malware"**, allow it via either method:
+
+- **Terminal**: `xattr -rd com.apple.quarantine /Applications/GotifyDesktop.app`
+- **System Settings**: Click **Done** on the prompt → **System Settings → Privacy & Security** → click **Open Anyway** at the bottom.
 
 ## Features
 
 - **Two-column layout**: Navigate by Gotify Application in the left sidebar and read message lists or details in the right canvas.
 - **Live & history sync**: A single WebSocket connection receives live messages in real time, while REST history paginates automatically on demand.
-- **Session-only attention state**: In-memory new-message indicators, per-application counts, “Show new messages”, and “Mark all as viewed”.
+- **Message deletion**: Delete individual messages, clear all messages for a specific application, or delete all messages on the server.
+- **Session-only attention state**: In-memory new-message indicators, per-application counts, and a centered top new-message prompt bar.
 - **Native macOS integration**: Menu bar extra, native notification banners, and the optional Gotify notification sound.
 - **Appearance & localization**: System, Dark, and White themes, plus instant in-app switching between English and Simplified Chinese.
 

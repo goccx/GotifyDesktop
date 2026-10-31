@@ -175,7 +175,10 @@ final class MessageStore: ObservableObject {
     }
 
     func revealPendingLiveMessages(for page: MessagePage) async {
-        if await pageStore.revealPendingLiveMessages(for: page) { await publish(page) }
+        let affected = await pageStore.revealPendingLiveMessages(for: page)
+        for affectedPage in affected {
+            await publish(affectedPage)
+        }
     }
 
     func invalidate(_ page: MessagePage) async {
@@ -243,6 +246,26 @@ final class MessageStore: ObservableObject {
             attentionBySource[id]?.markAllViewed()
         }
         newMessagesBySource = attentionBySource
+    }
+
+    func removeCurrentSessionMessage(id: Int64, sourceID: Int64) async {
+        let expectedSessionID = sessionID
+        markMessageViewed(id, sourceID: sourceID)
+        let affected = await pageStore.removeMessage(id: id, sourceID: sourceID, sessionID: expectedSessionID)
+        guard expectedSessionID == sessionID else { return }
+        for page in affected {
+            await publish(page)
+        }
+    }
+
+    func removeCurrentSessionMessages(for page: MessagePage) async {
+        let expectedSessionID = sessionID
+        markAllMessagesViewed(for: page)
+        let affected = await pageStore.removeAllMessages(for: page, sessionID: expectedSessionID)
+        guard expectedSessionID == sessionID else { return }
+        for affectedPage in affected {
+            await publish(affectedPage)
+        }
     }
 
     func setConnectionState(_ state: ConnectionState) {

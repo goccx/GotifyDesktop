@@ -23,19 +23,19 @@ GotifyDesktop 专注于轻量化实时通知接收：消息属于你的 Gotify �
 
 🔗 [查看全部版本与更新日志 (GitHub Releases)](https://github.com/goccx/GotifyDesktop/releases)
 
-### 安装与首次打开说明
+### 首次打开说明
 
-1. 下载对应架构的 `.dmg` 并双击打开，将 `GotifyDesktop.app` 拖入 `Applications`（应用程序）文件夹。
-2. 本项目采用开源免费的本地 Ad-hoc 签名构建，未绑定 Apple Developer ID 付费证书公证。首次打开若被 macOS Gatekeeper 提示“无法验证开发者”，请在 Finder 中**右键点击应用选择“打开”**，或在终端执行以下命令直接放行：
-   ```sh
-   xattr -cr /Applications/GotifyDesktop.app
-   ```
+将 `.dmg` 中的 `GotifyDesktop.app` 拖入 `Applications`（应用程序）后，若提示 **“Apple 无法验证 GotifyDesktop 是否包含恶意软件”**，任选一种方式放行：
+
+- **终端放行**：`xattr -rd com.apple.quarantine /Applications/GotifyDesktop.app`
+- **系统设置放行**：在弹窗点**“完成”** → **系统设置 → 隐私与安全性** → 底部点击**“仍要打开”**。
 
 ## 功能特性
 
 - **固定两栏布局**：左侧按 Gotify 应用（Application）来源导航，右侧为消息列表与详情阅读区。
 - **实时与历史同步**：单一 WebSocket 连接实时接收新消息，REST API 按需自动分页加载历史消息。
-- **运行期新消息提示**：提供仅本次运行的新消息蓝点、各来源计数、“显示新消息”与“全部查看”。
+- **消息删除**：支持删除单条消息、清空指定应用全部消息以及清空全部服务端消息。
+- **运行期新消息提示**：提供仅本次运行的新消息蓝点、各来源计数与列表顶部居中的新消息提示条。
 - **macOS 原生集成**：常驻系统菜单栏，支持原生横幅通知及可选的 Gotify 专属提示音。
 - **外观与多语言**：支持“跟随系统 / 深色 / 白色”三种主题，以及简体中文与 English 即时切换。
 

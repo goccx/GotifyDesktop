@@ -1,6 +1,16 @@
-.PHONY: all build run release test clean
+.DEFAULT_GOAL := help
+.PHONY: help build run release test clean
 
-all: build
+help:
+	@echo "Usage: make <target>"
+	@echo ""
+	@echo "Targets:"
+	@echo "  help     Show this help message (default)"
+	@echo "  build    Build and assemble debug GotifyDesktop.app"
+	@echo "  run      Build and launch debug GotifyDesktop.app"
+	@echo "  test     Run unit tests"
+	@echo "  release  Package arm64 and amd64 release .dmg installers in .build/dist/"
+	@echo "  clean    Remove build artifacts (.build)"
 
 build:
 	@./Tools/build-app.sh

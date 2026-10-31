@@ -104,6 +104,25 @@ final class GotifySessionController {
                                complete: messageStore.finishLoadingNextPage, fail: messageStore.failLoadingNextPage)
     }
 
+    /// Deletes a single message on the Gotify server (`DELETE /message/{id}`) and removes it from the in-memory session.
+    func deleteMessage(_ message: GotifyMessage) async throws {
+        guard let session = activeSession else { throw CancellationError() }
+        let client = try currentClient(for: session)
+        try await client.deleteMessage(id: message.id)
+        guard isActive(session) else { return }
+        await messageStore.removeCurrentSessionMessage(id: message.id, sourceID: message.sourceID)
+    }
+
+    /// Deletes all messages (`DELETE /message`) or all messages for an application (`DELETE /application/{id}/message`).
+    func deleteMessages(for sourceID: Int64?) async throws {
+        let page = sourceID.map(MessagePage.application) ?? .all
+        guard let session = activeSession else { throw CancellationError() }
+        let client = try currentClient(for: session)
+        try await client.deleteMessages(for: page)
+        guard isActive(session) else { return }
+        await messageStore.removeCurrentSessionMessages(for: page)
+    }
+
     /// Both pagination targets use the same transport lifecycle. Page/cursor are captured in the
     /// claim, and a cancelled or replaced session cannot complete a request into another timeline.
     private func fetchHistory(

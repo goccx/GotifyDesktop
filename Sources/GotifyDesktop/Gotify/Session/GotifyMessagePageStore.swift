@@ -239,6 +239,65 @@ actor GotifyMessagePageStore {
         timelines[.all] = TimelineState(items: messages.map(MessageTimelineItem.message), loadState: .loaded)
     }
 
+    /// Removes one server-deleted message across every retained timeline and pending buffer.
+    func removeMessage(id: Int64, sourceID: Int64, sessionID expectedSessionID: UUID) -> Set<MessagePage> {
+        guard expectedSessionID == sessionID else { return [] }
+        var affected: Set<MessagePage> = [.all, .application(sourceID)]
+        for page in timelines.keys {
+            guard var state = timelines[page] else { continue }
+            let oldCount = state.items.count
+            let oldPendingCount = state.pendingLiveMessages.count
+            state.items.removeAll { $0.messageID == id }
+            state.pendingLiveMessages.removeAll { $0.id == id }
+            state.visibleMessageIDs.removeAll { $0 == id }
+            if state.scrollAnchorID == id {
+                state.scrollAnchorID = nil
+            }
+            if state.items.count != oldCount || state.pendingLiveMessages.count != oldPendingCount {
+                affected.insert(page)
+            }
+            timelines[page] = state
+        }
+        return affected
+    }
+
+    /// Clears either the entire server message history (`.all`) or one application's messages (`.application(id)`).
+    func removeAllMessages(for page: MessagePage, sessionID expectedSessionID: UUID) -> Set<MessagePage> {
+        guard expectedSessionID == sessionID else { return [] }
+        switch page {
+        case .all:
+            var affected = Set(timelines.keys)
+            affected.insert(.all)
+            for key in affected {
+                let wasLoaded = timelines[key]?.loadState == .loaded
+                timelines[key] = TimelineState(loadState: wasLoaded ? .loaded : .idle)
+            }
+            return affected
+        case let .application(appID):
+            let wasAppLoaded = timelines[.application(appID)]?.loadState == .loaded
+            timelines[.application(appID)] = TimelineState(loadState: wasAppLoaded ? .loaded : .idle)
+            if var allState = timelines[.all] {
+                let removedIDs = Set(
+                    allState.items.compactMap { item -> Int64? in
+                        guard case let .message(message) = item, message.sourceID == appID else { return nil }
+                        return message.id
+                    }
+                )
+                allState.items.removeAll { item in
+                    guard case let .message(message) = item else { return false }
+                    return message.sourceID == appID
+                }
+                allState.pendingLiveMessages.removeAll { $0.sourceID == appID }
+                allState.visibleMessageIDs.removeAll { removedIDs.contains($0) }
+                if let anchor = allState.scrollAnchorID, removedIDs.contains(anchor) {
+                    allState.scrollAnchorID = nil
+                }
+                timelines[.all] = allState
+            }
+            return [.all, .application(appID)]
+        }
+    }
+
     func insertLiveMessages(_ messages: [GotifyMessage], sessionID expectedSessionID: UUID) -> [GotifyMessage] {
         guard expectedSessionID == sessionID else { return [] }
         // A batched delivery may contain frames out of order; advance the monotonic watermark
@@ -272,18 +331,51 @@ actor GotifyMessagePageStore {
         queuePendingMessages(incoming, in: &state)
         let priorTopID = state.items.compactMap(\.messageID).first
         if state.loadState == .loaded,
-           state.tailRequest == nil, state.gapRequests.isEmpty,
-           let priorTopID, state.visibleMessageIDs.contains(priorTopID) {
-            integratePendingMessages(in: &state)
-            state.scrollAnchorID = priorTopID
-            releaseTail(afterLastVisibleItemIn: &state)
+           state.tailRequest == nil, state.gapRequests.isEmpty {
+            if let priorTopID {
+                if state.visibleMessageIDs.contains(priorTopID) {
+                    integratePendingMessages(in: &state)
+                    state.scrollAnchorID = priorTopID
+                    releaseTail(afterLastVisibleItemIn: &state)
+                    if let newTopID = state.items.compactMap(\.messageID).first,
+                       !state.visibleMessageIDs.contains(newTopID) {
+                        state.visibleMessageIDs.insert(newTopID, at: 0)
+                    }
+                }
+            } else {
+                integratePendingMessages(in: &state)
+                if let newTopID = state.items.compactMap(\.messageID).first,
+                   !state.visibleMessageIDs.contains(newTopID) {
+                    state.visibleMessageIDs.insert(newTopID, at: 0)
+                }
+            }
         }
         timelines[page] = state
     }
 
     /// Explicit navigation to latest content is the only history-reading action that may move
     /// the viewport. It does not mark any message viewed or change source attention counters.
-    func revealPendingLiveMessages(for page: MessagePage) -> Bool {
+    func revealPendingLiveMessages(for page: MessagePage) -> Set<MessagePage> {
+        var affected: Set<MessagePage> = []
+        switch page {
+        case .all:
+            for key in timelines.keys {
+                if revealSinglePage(key) {
+                    affected.insert(key)
+                }
+            }
+        case let .application(appID):
+            if revealSinglePage(.application(appID)) {
+                affected.insert(.application(appID))
+            }
+            if revealSourceMessagesInAll(sourceID: appID) {
+                affected.insert(.all)
+            }
+        }
+        return affected
+    }
+
+    private func revealSinglePage(_ page: MessagePage) -> Bool {
         guard var state = timelines[page], state.loadState == .loaded else { return false }
         if !state.pendingLiveMessages.isEmpty {
             state.tailRequest = nil
@@ -292,7 +384,32 @@ actor GotifyMessagePageStore {
         }
         guard !state.items.isEmpty else { return false }
         state.scrollAnchorID = state.items.compactMap(\.messageID).first
+        releaseTail(afterLastVisibleItemIn: &state)
         timelines[page] = state
+        return true
+    }
+
+    private func revealSourceMessagesInAll(sourceID: Int64) -> Bool {
+        guard var state = timelines[.all], state.loadState == .loaded else { return false }
+        let matching = state.pendingLiveMessages.filter { $0.sourceID == sourceID }
+        guard !matching.isEmpty else { return false }
+        let knownIDs = Set(state.items.compactMap(\.messageID))
+        let oldTopID = state.items.compactMap(\.messageID).first
+        let toInsert = matching.filter { message in
+            !knownIDs.contains(message.id) && (oldTopID.map { message.id > $0 } ?? true)
+        }
+        if !toInsert.isEmpty {
+            state.items.insert(contentsOf: toInsert.map(MessageTimelineItem.message), at: 0)
+            if state.items.allSatisfy({ $0.messageID != nil }) {
+                let mergedMessages = state.items.compactMap { item -> GotifyMessage? in
+                    guard case let .message(message) = item else { return nil }
+                    return message
+                }
+                state.items = orderedUniqueMessages(mergedMessages).map(MessageTimelineItem.message)
+            }
+        }
+        state.pendingLiveMessages.removeAll { $0.sourceID == sourceID }
+        timelines[.all] = state
         return true
     }
 

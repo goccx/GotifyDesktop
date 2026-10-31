@@ -56,3 +56,16 @@
 "message.newMessagesAccessibility" = "%lld new messages";
 "message.newMessagesHeader" = "%lld new messages";
 "message.newMessagesOverflowHeader" = "999+ new messages";
+"message.delete" = "Delete Message";
+"message.delete.confirm.title" = "Delete this message?";
+"message.delete.confirm.description" = "This will permanently delete “%@” from your Gotify server.";
+"message.deleteAll" = "Delete All Messages…";
+"message.deleteSourceAll" = "Delete All Messages in Source…";
+"message.deleteAll.confirm.title" = "Delete All Messages?";
+"message.deleteAll.confirm.description" = "This permanently deletes all messages on the Gotify server.";
+"message.deleteSourceAll.confirm.title" = "Delete All Messages in “%@”?";
+"message.deleteSourceAll.confirm.description" = "This permanently deletes all messages for this application on the Gotify server.";
+"message.delete.confirmAction" = "Delete";
+"message.delete.cancelAction" = "Cancel";
+"inbox.deleteFailed.title" = "Could not delete messages";
+"inbox.deleteFailed.description" = "Check the server connection and try again.";

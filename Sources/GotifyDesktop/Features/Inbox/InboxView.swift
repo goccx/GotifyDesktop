@@ -10,6 +10,9 @@ struct InboxView: View {
     /// The token is supplied only to authenticated icon requests and is never serialized by the image cache.
     @EnvironmentObject private var serverPreferences: ServerPreferences
     @State private var selection: SidebarSelection? = .allMessages
+    @State private var pendingSingleDeleteMessage: GotifyMessage?
+    @State private var pendingBulkDeletePage: MessagePage?
+    @State private var showsDeleteErrorAlert = false
 
     var body: some View {
         // Async callbacks keep the page that rendered them; a later selection cannot retarget
@@ -21,7 +24,10 @@ struct InboxView: View {
                 sources: sourceItems,
                 newMessageCount: messageStore.newMessageCount,
                 newMessageCountsBySource: newMessageCountsBySource,
-                clientToken: serverPreferences.clientToken
+                clientToken: serverPreferences.clientToken,
+                requestBulkDelete: { targetPage in
+                    pendingBulkDeletePage = targetPage
+                }
             )
                 // A navigation column needs enough breathing room for real application names and
                 // the transient count. The bounded range keeps the reading canvas dominant.
@@ -45,10 +51,59 @@ struct InboxView: View {
                 loadNextPage: { try await serverPreferences.loadNextPage(for: page.sourceID) },
                 revealPendingLiveMessages: { await messageStore.revealPendingLiveMessages(for: page) },
                 setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: page) },
-                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: page) }
+                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: page) },
+                deleteMessage: { message in pendingSingleDeleteMessage = message },
+                requestBulkDelete: { pendingBulkDeletePage = page }
             )
         }
         .navigationSplitViewStyle(.balanced)
+        .confirmationDialog(
+            Localized.string("message.delete.confirm.title"),
+            isPresented: Binding(
+                get: { pendingSingleDeleteMessage != nil },
+                set: { if !$0 { pendingSingleDeleteMessage = nil } }
+            ),
+            presenting: pendingSingleDeleteMessage
+        ) { targetMessage in
+            Button(Localized.string("message.delete.confirmAction"), role: .destructive) {
+                pendingSingleDeleteMessage = nil
+                performDeleteMessage(targetMessage)
+            }
+            .accessibilityIdentifier("confirm-delete-message-button")
+            Button(Localized.string("message.delete.cancelAction"), role: .cancel) {
+                pendingSingleDeleteMessage = nil
+            }
+        } message: { targetMessage in
+            let summary = targetMessage.title.isEmpty ? targetMessage.body : targetMessage.title
+            Text(Localized.string("message.delete.confirm.description", summary))
+        }
+        .confirmationDialog(
+            bulkDeleteConfirmationTitle(for: pendingBulkDeletePage),
+            isPresented: Binding(
+                get: { pendingBulkDeletePage != nil },
+                set: { if !$0 { pendingBulkDeletePage = nil } }
+            ),
+            presenting: pendingBulkDeletePage
+        ) { targetPage in
+            Button(Localized.string("message.delete.confirmAction"), role: .destructive) {
+                pendingBulkDeletePage = nil
+                deleteAllMessages(for: targetPage)
+            }
+            .accessibilityIdentifier("confirm-bulk-delete-messages-button")
+            Button(Localized.string("message.delete.cancelAction"), role: .cancel) {
+                pendingBulkDeletePage = nil
+            }
+        } message: { targetPage in
+            Text(bulkDeleteConfirmationDescription(for: targetPage))
+        }
+        .alert(
+            Localized.string("inbox.deleteFailed.title"),
+            isPresented: $showsDeleteErrorAlert
+        ) {
+            Button(Localized.string("message.delete.cancelAction"), role: .cancel) {}
+        } message: {
+            Text(Localized.string("inbox.deleteFailed.description"))
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 ConnectionStatusLabel(state: messageStore.connectionState, language: preferences.language)
@@ -113,6 +168,48 @@ struct InboxView: View {
         Task { await messageStore.consumeScrollAnchor(anchorID, for: page) }
     }
 
+    private func performDeleteMessage(_ message: GotifyMessage) {
+        Task {
+            do {
+                try await serverPreferences.deleteMessage(message)
+            } catch {
+                showsDeleteErrorAlert = true
+            }
+        }
+    }
+
+    private func deleteAllMessages(for page: MessagePage) {
+        Task {
+            do {
+                try await serverPreferences.deleteMessages(for: page.sourceID)
+            } catch {
+                showsDeleteErrorAlert = true
+            }
+        }
+    }
+
+    private func bulkDeleteConfirmationTitle(for page: MessagePage?) -> String {
+        switch page {
+        case .all, .none:
+            Localized.string("message.deleteAll.confirm.title")
+        case let .application(sourceID):
+            Localized.string("message.deleteSourceAll.confirm.title", sourceName(for: sourceID))
+        }
+    }
+
+    private func bulkDeleteConfirmationDescription(for page: MessagePage) -> String {
+        switch page {
+        case .all:
+            Localized.string("message.deleteAll.confirm.description")
+        case let .application(sourceID):
+            Localized.string("message.deleteSourceAll.confirm.description", sourceName(for: sourceID))
+        }
+    }
+
+    private func sourceName(for sourceID: Int64) -> String {
+        sourceItems.first(where: { $0.id == sourceID })?.name ?? "#\(sourceID)"
+    }
+
 }
 
 /// Sidebar selection contains only stable navigation identity, never mutable server presentation metadata.
@@ -142,6 +239,7 @@ private struct SidebarView: View {
     let newMessageCount: Int
     let newMessageCountsBySource: [Int64: Int]
     let clientToken: String
+    let requestBulkDelete: (MessagePage) -> Void
 
     var body: some View {
         List(selection: $selection) {
@@ -154,6 +252,14 @@ private struct SidebarView: View {
             .tag(SidebarSelection.allMessages)
             .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
             .listRowBackground(SidebarSelectionBackground(isSelected: selection == .allMessages))
+            .contextMenu {
+                Button(role: .destructive) {
+                    requestBulkDelete(.all)
+                } label: {
+                    Label(Localized.string("message.deleteAll"), systemImage: "trash")
+                }
+                .accessibilityIdentifier("sidebar-delete-all-messages-button")
+            }
             .accessibilityIdentifier("all-messages-sidebar-item")
 
             ForEach(sources) { source in
@@ -168,6 +274,14 @@ private struct SidebarView: View {
                 .tag(item)
                 .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
                 .listRowBackground(SidebarSelectionBackground(isSelected: selection == item))
+                .contextMenu {
+                    Button(role: .destructive) {
+                        requestBulkDelete(.application(source.id))
+                    } label: {
+                        Label(Localized.string("message.deleteSourceAll"), systemImage: "trash")
+                    }
+                    .accessibilityIdentifier("sidebar-delete-source-messages-\(source.id)")
+                }
                 .accessibilityIdentifier("source-sidebar-item-\(source.id)")
             }
         }
@@ -307,6 +421,8 @@ private struct ReadingCanvas: View {
     let revealPendingLiveMessages: () async -> Void
     let setMessageVisibility: (Int64, Bool) -> Void
     let consumeScrollAnchor: (Int64) -> Void
+    let deleteMessage: (GotifyMessage) -> Void
+    let requestBulkDelete: () -> Void
     @State private var selectedMessage: GotifyMessage?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -352,7 +468,9 @@ private struct ReadingCanvas: View {
                             loadNextPage: loadNextPage,
                             revealPendingLiveMessages: revealPendingLiveMessages,
                             setMessageVisibility: setMessageVisibility,
-                            consumeScrollAnchor: consumeScrollAnchor
+                            consumeScrollAnchor: consumeScrollAnchor,
+                            deleteMessage: deleteMessage,
+                            requestBulkDelete: requestBulkDelete
                         ) { message in
                             markMessageViewed(message.id, message.sourceID)
                             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
@@ -369,7 +487,12 @@ private struct ReadingCanvas: View {
             .allowsHitTesting(selectedMessage == nil)
             .accessibilityHidden(selectedMessage != nil)
             if let selectedMessage {
-                MessageDetailView(message: selectedMessage) {
+                MessageDetailView(
+                    message: selectedMessage,
+                    deleteMessage: {
+                        deleteMessage(selectedMessage)
+                    }
+                ) {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
                         self.selectedMessage = nil
                     }
@@ -379,6 +502,18 @@ private struct ReadingCanvas: View {
         .navigationTitle(navigationTitle)
         .onChange(of: page) { _, _ in
             selectedMessage = nil
+        }
+        .onChange(of: timelineItems) { _, items in
+            guard let selectedMessage else { return }
+            let stillPresent = items.contains { item in
+                if case let .message(message) = item {
+                    return message.id == selectedMessage.id
+                }
+                return false
+            }
+            if !stillPresent {
+                self.selectedMessage = nil
+            }
         }
     }
 }
@@ -400,72 +535,93 @@ private struct MessageListView: View {
     let revealPendingLiveMessages: () async -> Void
     let setMessageVisibility: (Int64, Bool) -> Void
     let consumeScrollAnchor: (Int64) -> Void
+    let deleteMessage: (GotifyMessage) -> Void
+    let requestBulkDelete: () -> Void
     let selectMessage: (GotifyMessage) -> Void
     @Environment(\.locale) private var locale
+    @State private var isTopBarHovered = false
 
     var body: some View {
         ScrollViewReader { proxy in
-            List {
-                // `List` virtualizes rows. A gap loads only when it enters the visible range.
-                ForEach(timelineItems) { item in
-                    MessageTimelineListRow(
-                        item: item,
-                        isNewMessage: isNewMessage,
-                        clientToken: clientToken,
-                        locale: locale,
-                        isPresented: isPresented,
-                        selectMessage: selectMessage,
-                        loadMore: loadMore,
-                        setMessageVisibility: setMessageVisibility
-                    )
+            VStack(spacing: 0) {
+                if isPresented && (newMessageCount > 0 || hasPendingLiveMessages) {
+                    newMessagesTopBar(proxy: proxy)
+                    Divider()
                 }
-                // A fixed row container matches the reference timeline's footer structure.
-                // No explicit footer ID: appending history must not anchor scrolling to the footer.
-                ZStack {
-                    if hasNextPage {
-                        NextMessagePageSentinel(isEnabled: isPresented, loadNextPage: loadNextPage)
+
+                List {
+                    // `List` virtualizes rows. A gap loads only when it enters the visible range.
+                    ForEach(timelineItems) { item in
+                        MessageTimelineListRow(
+                            item: item,
+                            page: page,
+                            isNewMessage: isNewMessage,
+                            clientToken: clientToken,
+                            locale: locale,
+                            isPresented: isPresented,
+                            selectMessage: selectMessage,
+                            deleteMessage: deleteMessage,
+                            requestBulkDelete: requestBulkDelete,
+                            loadMore: loadMore,
+                            setMessageVisibility: setMessageVisibility
+                        )
                     }
+                    // A fixed row container matches the reference timeline's footer structure.
+                    // No explicit footer ID: appending history must not anchor scrolling to the footer.
+                    ZStack {
+                        if hasNextPage {
+                            NextMessagePageSentinel(isEnabled: isPresented, loadNextPage: loadNextPage)
+                        }
+                    }
+                    .listRowSeparator(.hidden)
                 }
-                .listRowSeparator(.hidden)
-            }
-            .listStyle(.inset)
-            .accessibilityIdentifier("message-timeline-list")
-            // Only live insertion at the head or explicit "show new" sets an anchor.
-            // Completing a tail page or a gap never sends a scroll instruction.
-            .onChange(of: scrollAnchorID) { _, anchorID in
-                guard let anchorID else { return }
-                if isPresented { proxy.scrollTo("message-\(anchorID)", anchor: .top) }
-                consumeScrollAnchor(anchorID)
-            }
-        }
-        // An overlay contributes no height to the List. Showing/clearing attention therefore
-        // changes neither the viewport bounds nor any existing row's layout or identity.
-        .overlay(alignment: .bottomTrailing) {
-            if isPresented && (newMessageCount > 0 || hasPendingLiveMessages) {
-                newMessagesPrompt
-                    .padding()
+                .listStyle(.inset)
+                .accessibilityIdentifier("message-timeline-list")
+                // Explicit top-bar reveal keeps the newest arrival at the top of the feed visible.
+                .onChange(of: scrollAnchorID) { _, anchorID in
+                    guard let anchorID else { return }
+                    if isPresented {
+                        proxy.scrollTo(timelineItems.first?.id ?? "message-\(anchorID)", anchor: .top)
+                    }
+                    consumeScrollAnchor(anchorID)
+                }
             }
         }
     }
 
-    /// Compact native-material controls appear only when useful; no invisible header is reserved.
-    private var newMessagesPrompt: some View {
-        HStack {
-            Text(newMessageHeader)
-                .foregroundStyle(.secondary)
-            Button(Localized.string("message.showNewMessages")) {
-                Task { await revealPendingLiveMessages() }
+    /// Full-width centered top bar: clicking anywhere on the bar reveals all pending new messages and clears the prompt.
+    private func newMessagesTopBar(proxy: ScrollViewProxy) -> some View {
+        Button {
+            Task {
+                await revealPendingLiveMessages()
+                markAllMessagesViewed()
+                if let firstID = timelineItems.first?.id {
+                    proxy.scrollTo(firstID, anchor: .top)
+                }
             }
-            .accessibilityIdentifier("show-new-messages-button")
-            Button(Localized.string("message.markAllViewed"), action: markAllMessagesViewed)
-                .disabled(newMessageCount == 0)
-                .accessibilityIdentifier("mark-all-messages-viewed-button")
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(.blue)
+                    .frame(width: 7, height: 7)
+                Text(newMessageHeader)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .background(isTopBarHovered ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04))
+            .background(.bar)
+            .contentShape(Rectangle())
         }
-        .font(.subheadline)
-        .buttonStyle(.borderless)
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isTopBarHovered = hovering
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(newMessageHeader)
+        .accessibilityIdentifier("show-new-messages-button")
     }
 
     /// The exact count remains available to accessibility; the visual counter follows the agreed compact cap.
@@ -530,11 +686,14 @@ private struct NextMessagePageSentinel: View {
 /// This preserves the reference timeline's row structure and efficient native identification.
 private struct MessageTimelineListRow: View {
     let item: MessageTimelineItem
+    let page: MessagePage
     let isNewMessage: (GotifyMessage) -> Bool
     let clientToken: String
     let locale: Locale
     let isPresented: Bool
     let selectMessage: (GotifyMessage) -> Void
+    let deleteMessage: (GotifyMessage) -> Void
+    let requestBulkDelete: () -> Void
     let loadMore: (UUID) async throws -> Void
     let setMessageVisibility: (Int64, Bool) -> Void
 
@@ -547,8 +706,35 @@ private struct MessageTimelineListRow: View {
                     isNew: isNewMessage(message),
                     clientToken: clientToken,
                     locale: locale,
-                    select: selectMessage
+                    select: selectMessage,
+                    delete: deleteMessage
                 )
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        deleteMessage(message)
+                    } label: {
+                        Label(Localized.string("message.delete"), systemImage: "trash")
+                    }
+                    .accessibilityIdentifier("swipe-delete-message-\(message.id)")
+                }
+                .contextMenu {
+                    Button(role: .destructive) {
+                        deleteMessage(message)
+                    } label: {
+                        Label(Localized.string("message.delete"), systemImage: "trash")
+                    }
+                    .accessibilityIdentifier("context-delete-message-\(message.id)")
+
+                    Divider()
+
+                    Button(role: .destructive, action: requestBulkDelete) {
+                        Label(
+                            Localized.string(page == .all ? "message.deleteAll" : "message.deleteSourceAll"),
+                            systemImage: "trash"
+                        )
+                    }
+                    .accessibilityIdentifier("context-delete-page-messages-\(message.id)")
+                }
                 .onAppear { setMessageVisibility(message.id, isPresented) }
                 .onDisappear { setMessageVisibility(message.id, false) }
                 .onChange(of: isPresented) { _, presented in setMessageVisibility(message.id, presented) }
@@ -571,16 +757,64 @@ private struct MessageListRow: View {
     let clientToken: String
     let locale: Locale
     let select: (GotifyMessage) -> Void
+    let delete: (GotifyMessage) -> Void
+    @State private var isRowHovered = false
+    @State private var isDeleteHovered = false
+
+    private var showsDeleteButton: Bool {
+        isRowHovered || isDeleteHovered
+    }
 
     var body: some View {
-        Button { select(message) } label: {
-            // Only values participate in presentation equality. The button action stays current,
-            // while unchanged old image/timestamp content skips parent-driven body recomputation.
-            MessageRowContent(message: message, isNew: isNew, clientToken: clientToken, locale: locale)
-                .equatable()
+        HStack(alignment: .center, spacing: 10) {
+            Button { select(message) } label: {
+                // Only values participate in presentation equality. The button action stays current,
+                // while unchanged old image/timestamp content skips parent-driven body recomputation.
+                MessageRowContent(message: message, isNew: isNew, clientToken: clientToken, locale: locale)
+                    .equatable()
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("message-row-\(message.id)")
+
+            MessageDeleteButton(
+                messageID: message.id,
+                isVisible: showsDeleteButton,
+                isHovered: $isDeleteHovered
+            ) {
+                delete(message)
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("message-row-\(message.id)")
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isRowHovered = hovering
+        }
+    }
+}
+
+/// Slightly larger native borderless delete icon that appears only when the row is hovered/active
+/// and highlights the symbol itself on hover.
+private struct MessageDeleteButton: View {
+    let messageID: Int64
+    let isVisible: Bool
+    @Binding var isHovered: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: .destructive, action: action) {
+            Image(systemName: "trash")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(isHovered ? Color.red : Color.secondary)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .opacity(isVisible ? 1 : 0)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help(Localized.string("message.delete"))
+        .accessibilityLabel(Localized.string("message.delete"))
+        .accessibilityIdentifier("delete-message-button-\(messageID)")
     }
 }
 
@@ -656,29 +890,46 @@ private struct GotifyApplicationIcon: View {
 /// Detail stays inside the reading canvas so a long message never changes the two-column window geometry.
 private struct MessageDetailView: View {
     let message: GotifyMessage
+    let deleteMessage: () -> Void
     let dismiss: () -> Void
     @Environment(\.locale) private var locale
+    @State private var isDeleteHovered = false
 
     var body: some View {
         VStack(spacing: 0) {
             // Keep navigation separate from message content: the full 48 pt header is the target,
             // so returning remains easy even when the message body is long or densely formatted.
-            Button(action: dismiss) {
-                HStack(spacing: 10) {
-                    Image(systemName: "chevron.backward")
-                        .font(.headline.weight(.semibold))
-                    Text(Localized.string("message.detail.back"))
-                        .font(.headline)
-                    Spacer(minLength: 0)
+            HStack(spacing: 12) {
+                Button(action: dismiss) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "chevron.backward")
+                            .font(.headline.weight(.semibold))
+                        Text(Localized.string("message.detail.back"))
+                            .font(.headline)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 24)
-                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel(Localized.string("message.detail.back"))
+                .accessibilityHint(Localized.string("message.detail.back.hint"))
+                .accessibilityIdentifier("message-detail-back-button")
+
+                Button(role: .destructive, action: deleteMessage) {
+                    Label(Localized.string("message.delete"), systemImage: "trash")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(isDeleteHovered ? Color.red : Color.secondary)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .onHover { hovering in
+                    isDeleteHovered = hovering
+                }
+                .accessibilityIdentifier("message-detail-delete-button")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Localized.string("message.detail.back"))
-            .accessibilityHint(Localized.string("message.detail.back.hint"))
-            .accessibilityIdentifier("message-detail-back-button")
+            .padding(.horizontal, 24)
 
             Divider()
 

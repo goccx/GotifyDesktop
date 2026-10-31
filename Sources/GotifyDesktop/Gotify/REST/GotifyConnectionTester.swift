@@ -31,7 +31,12 @@ enum GotifyGeneratedAPI {
             customHeaders: ["X-Gotify-Key": clientToken],
             requestBuilderFactory: EphemeralRequestBuilderFactory(),
             apiResponseQueue: DispatchQueue(label: "com.gotify.desktop.api"),
-            codableHelper: codableHelper
+            codableHelper: codableHelper,
+            // Gotify DELETE endpoints return HTTP 200 OK with an empty body, whereas Alamofire's
+            // default DataResponseSerializer only permits empty bodies for 204 and 205.
+            dataResponseSerializer: AnyResponseSerializer(
+                DataResponseSerializer(emptyResponseCodes: [200, 204, 205])
+            )
         )
     }
 
