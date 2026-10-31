@@ -53,11 +53,10 @@ struct InboxView: View {
                 hasNextPage: !isTransitioning && messageStore.hasNextPage(for: page),
                 scrollAnchorID: messageStore.scrollAnchorID(for: page),
                 hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: page),
-                newMessageCount: messageStore.newMessageCount(for: page),
+                unexpandedMessageCount: messageStore.unexpandedMessageCount(for: page),
                 isNewMessage: { messageStore.isNewMessage($0.id, sourceID: $0.sourceID) },
                 clientToken: serverPreferences.clientToken,
                 markMessageViewed: messageStore.markMessageViewed,
-                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: page) },
                 retryLoading: loadSelectedPage,
                 loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: page.sourceID, gapID: gapID) },
                 loadNextPage: { try await serverPreferences.loadNextPage(for: page.sourceID) },
@@ -185,10 +184,7 @@ struct InboxView: View {
 
         if !hasMessages {
             readyPage = targetPage
-            Task {
-                await serverPreferences.loadMessages(for: sourceID)
-                await messageStore.revealPendingLiveMessages(for: targetPage)
-            }
+            Task { await serverPreferences.loadMessages(for: sourceID) }
             return
         }
 
@@ -201,7 +197,6 @@ struct InboxView: View {
             guard !Task.isCancelled else { return }
             readyPage = targetPage
             await serverPreferences.loadMessages(for: sourceID)
-            await messageStore.revealPendingLiveMessages(for: targetPage)
         }
     }
 
@@ -544,11 +539,10 @@ private struct ReadingCanvas: View {
     let hasNextPage: Bool
     let scrollAnchorID: Int64?
     let hasPendingLiveMessages: Bool
-    let newMessageCount: Int
+    let unexpandedMessageCount: Int
     let isNewMessage: (GotifyMessage) -> Bool
     let clientToken: String
     let markMessageViewed: (Int64, Int64) -> Void
-    let markAllMessagesViewed: () -> Void
     let retryLoading: () -> Void
     let loadMore: (UUID) async throws -> Void
     let loadNextPage: () async throws -> Void
@@ -590,14 +584,13 @@ private struct ReadingCanvas: View {
                         MessageListView(
                             timelineItems: timelineItems,
                             page: page,
-                            newMessageCount: newMessageCount,
+                            unexpandedMessageCount: unexpandedMessageCount,
                             hasNextPage: hasNextPage,
                             scrollAnchorID: scrollAnchorID,
                             hasPendingLiveMessages: hasPendingLiveMessages,
                             isPresented: selectedMessage == nil,
                             isNewMessage: isNewMessage,
                             clientToken: clientToken,
-                            markAllMessagesViewed: markAllMessagesViewed,
                             loadMore: loadMore,
                             loadNextPage: loadNextPage,
                             revealPendingLiveMessages: revealPendingLiveMessages,
@@ -647,14 +640,13 @@ private struct ReadingCanvas: View {
 private struct MessageListView: View {
     let timelineItems: [MessageTimelineItem]
     let page: MessagePage
-    let newMessageCount: Int
+    let unexpandedMessageCount: Int
     let hasNextPage: Bool
     let scrollAnchorID: Int64?
     let hasPendingLiveMessages: Bool
     let isPresented: Bool
     let isNewMessage: (GotifyMessage) -> Bool
     let clientToken: String
-    let markAllMessagesViewed: () -> Void
     let loadMore: (UUID) async throws -> Void
     let loadNextPage: () async throws -> Void
     let revealPendingLiveMessages: () async -> Void
@@ -665,12 +657,13 @@ private struct MessageListView: View {
     let selectMessage: (GotifyMessage) -> Void
     @Environment(\.locale) private var locale
     @State private var isTopBarHovered = false
+    @State private var listScrollTarget = MessageListScrollTarget()
 
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
-                if newMessageCount > 0 || hasPendingLiveMessages {
-                    newMessagesTopBar(proxy: proxy)
+                if unexpandedMessageCount > 0 || hasPendingLiveMessages {
+                    newMessagesTopBar
                     Divider()
                 }
 
@@ -701,14 +694,24 @@ private struct MessageListView: View {
                     .compatibleHiddenListRowSeparator()
                 }
                 .listStyle(.inset)
+                .introspect(.list(style: .inset), on: .macOS(.v12, .v13, .v14, .v15, .v26)) { tableView in
+                    listScrollTarget.tableView = tableView
+                }
                 .accessibilityIdentifier("message-timeline-list")
-                // Explicit top-bar reveal keeps the newest arrival at the top of the feed visible.
+                // Live insertion anchors the previous top row so history does not jump;
+                // explicit top-bar reveal scrolls all the way to row 0 at the top of the feed.
                 .onChange(of: scrollAnchorID) { anchorID in
                     guard let anchorID else { return }
                     consumeScrollAnchor(anchorID)
                     if isPresented {
-                        DispatchQueue.main.async {
-                            proxy.scrollTo(timelineItems.first?.id ?? "message-\(anchorID)", anchor: .top)
+                        let firstMessageID: Int64? = {
+                            guard case let .message(first) = timelineItems.first else { return nil }
+                            return first.id
+                        }()
+                        if anchorID == firstMessageID {
+                            listScrollTarget.scrollToTop()
+                        } else {
+                            proxy.scrollTo("message-\(anchorID)", anchor: .top)
                         }
                     }
                 }
@@ -716,67 +719,71 @@ private struct MessageListView: View {
         }
     }
 
-    /// Top bar for unread / pending live messages: clicking the main area reveals pending messages
-    /// and scrolls to the top (or clears the bar if all messages are already revealed);
-    /// opening an individual message's detail view clears only that single message's unread dot.
-    private func newMessagesTopBar(proxy: ScrollViewProxy) -> some View {
-        HStack(spacing: 0) {
-            Button {
-                let hadPending = hasPendingLiveMessages
-                Task {
-                    await revealPendingLiveMessages()
-                    if !hadPending {
-                        markAllMessagesViewed()
-                    }
-                    if let firstID = timelineItems.first?.id {
-                        proxy.scrollTo(firstID, anchor: .top)
-                    }
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(.blue)
-                        .frame(width: 7, height: 7)
-                    Text(newMessageHeader)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .contentShape(Rectangle())
+    /// Full-width centered top bar: clicking once expands all pending live messages to the top of the list
+    /// and hides the bar, without marking any message as read (unread state is cleared only on detail open).
+    private var newMessagesTopBar: some View {
+        Button {
+            Task {
+                await revealPendingLiveMessages()
+                listScrollTarget.scrollToTop()
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(newMessageHeader)
-            .accessibilityIdentifier("show-new-messages-button")
-
-            if newMessageCount > 0 {
-                Button(action: markAllMessagesViewed) {
-                    Text(Localized.string("message.markAllViewed"))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("mark-all-messages-viewed-button")
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(.blue)
+                    .frame(width: 7, height: 7)
+                Text(newMessageHeader)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .background(isTopBarHovered ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04))
+            .background(.bar)
+            .contentShape(Rectangle())
         }
-        .background(isTopBarHovered ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04))
-        .background(.bar)
+        .buttonStyle(.plain)
         .onHover { hovering in
             isTopBarHovered = hovering
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(newMessageHeader)
+        .accessibilityIdentifier("show-new-messages-button")
     }
 
     /// The exact count remains available to accessibility; the visual counter follows the agreed compact cap.
     private var newMessageHeader: String {
-        if newMessageCount == 0 { return Localized.string("message.latestMessagesAvailable") }
-        return newMessageCount > NewMessageCountFormat.visualMaximum
+        if unexpandedMessageCount == 0 { return Localized.string("message.latestMessagesAvailable") }
+        return unexpandedMessageCount > NewMessageCountFormat.visualMaximum
             ? Localized.string("message.newMessagesOverflowHeader")
-            : Localized.string("message.newMessagesHeader", newMessageCount)
+            : Localized.string("message.newMessagesHeader", unexpandedMessageCount)
+    }
+}
+
+/// Ensures single-click top-bar expansion measures any unmeasured 24pt placeholder rows above the clip view
+/// and scrolls row 0 cleanly to the top of the NSTableView in a single interaction.
+@MainActor
+private final class MessageListScrollTarget {
+    weak var tableView: NSTableView?
+
+    func scrollToTop() {
+        performScrollToTop()
+        DispatchQueue.main.async { [weak self] in
+            self?.performScrollToTop()
+        }
+    }
+
+    private func performScrollToTop() {
+        guard let tableView, tableView.numberOfRows > 0 else { return }
+        for _ in 0..<8 {
+            tableView.scrollRowToVisible(0)
+            tableView.layoutSubtreeIfNeeded()
+            if let clipView = tableView.enclosingScrollView?.contentView,
+               clipView.bounds.origin.y <= 1 {
+                break
+            }
+        }
     }
 }
 

@@ -71,6 +71,7 @@ final class MessageStore: ObservableObject {
     @Published private var snapshots: [MessagePage: MessageTimelineSnapshot] = [:]
     private var applicationsByID: [Int64: GotifyApplication] = [:]
     @Published private var newMessagesBySource: [Int64: NewMessageState] = [:]
+    @Published private var unexpandedMessagesBySource: [Int64: NewMessageState] = [:]
     @Published private(set) var connectionState: ConnectionState = .notConfigured
     @Published private(set) var sessionVersion = UUID()
 
@@ -83,6 +84,7 @@ final class MessageStore: ObservableObject {
     var messages: Deque<GotifyMessage> { Deque(messages(for: .all)) }
     var applications: [GotifyApplication] { applicationsByID.values.sorted { $0.name < $1.name } }
     var newMessageCount: Int { newMessagesBySource.values.reduce(0) { $0 + $1.totalCount } }
+    var unexpandedMessageCount: Int { unexpandedMessagesBySource.values.reduce(0) { $0 + $1.totalCount } }
 
     func messages(for page: MessagePage) -> [GotifyMessage] { snapshots[page]?.messages ?? [] }
     func timelineItems(for page: MessagePage) -> [MessageTimelineItem] { snapshots[page]?.items ?? [] }
@@ -115,6 +117,17 @@ final class MessageStore: ObservableObject {
         return newMessageCount
     }
 
+    func unexpandedMessageCount(for sourceID: Int64) -> Int {
+        unexpandedMessagesBySource[sourceID]?.totalCount ?? 0
+    }
+
+    func unexpandedMessageCount(for page: MessagePage) -> Int {
+        if case let .application(id) = page {
+            return unexpandedMessageCount(for: id)
+        }
+        return unexpandedMessageCount
+    }
+
     func beginLoading(_ page: MessagePage) async -> UUID? {
         let expectedSessionID = sessionID
         let requestID = await pageStore.beginInitialLoad(for: page, sessionID: expectedSessionID)
@@ -126,6 +139,7 @@ final class MessageStore: ObservableObject {
     func finishLoading(_ page: MessagePage, requestID: UUID, result: GotifyMessagePage) async {
         let expectedSessionID = sessionID
         if await pageStore.finishInitialLoad(for: page, requestID: requestID, result: result), expectedSessionID == sessionID {
+            markPageExpanded(for: page)
             await publish(page)
         }
     }
@@ -184,10 +198,24 @@ final class MessageStore: ObservableObject {
     }
 
     func revealPendingLiveMessages(for page: MessagePage) async {
+        markPageExpanded(for: page)
         let affected = await pageStore.revealPendingLiveMessages(for: page)
         for affectedPage in affected {
             await publish(affectedPage)
         }
+    }
+
+    func markPageExpanded(for page: MessagePage) {
+        var unexpanded = unexpandedMessagesBySource
+        switch page {
+        case .all:
+            for id in unexpanded.keys {
+                unexpanded[id]?.markAllViewed()
+            }
+        case let .application(id):
+            unexpanded[id]?.markAllViewed()
+        }
+        unexpandedMessagesBySource = unexpanded
     }
 
     func invalidate(_ page: MessagePage) async {
@@ -202,6 +230,7 @@ final class MessageStore: ObservableObject {
         snapshots.removeAll(keepingCapacity: true)
         applicationsByID.removeAll(keepingCapacity: true)
         newMessagesBySource.removeAll(keepingCapacity: true)
+        unexpandedMessagesBySource.removeAll(keepingCapacity: true)
     }
 
     func replaceApplications(_ applications: [GotifyApplication]) {
@@ -223,12 +252,18 @@ final class MessageStore: ObservableObject {
         guard expectedSessionID == sessionID, !inserted.isEmpty else { return [] }
         // Commit attention once per WebSocket batch instead of invalidating the UI per message.
         var attentionBySource = newMessagesBySource
+        var unexpandedBySource = unexpandedMessagesBySource
         for message in inserted {
             var attention = attentionBySource[message.sourceID] ?? NewMessageState()
             attention.insert(message.id)
             attentionBySource[message.sourceID] = attention
+
+            var unexpanded = unexpandedBySource[message.sourceID] ?? NewMessageState()
+            unexpanded.insert(message.id)
+            unexpandedBySource[message.sourceID] = unexpanded
         }
         newMessagesBySource = attentionBySource
+        unexpandedMessagesBySource = unexpandedBySource
         await publish(.all)
         for sourceID in Set(inserted.map(\.sourceID)) {
             await publish(.application(sourceID))
@@ -241,11 +276,15 @@ final class MessageStore: ObservableObject {
     }
 
     func markMessageViewed(_ messageID: Int64, sourceID: Int64) {
+        if var unexpanded = unexpandedMessagesBySource[sourceID], unexpanded.markViewed(messageID) {
+            unexpandedMessagesBySource[sourceID] = unexpanded
+        }
         guard var state = newMessagesBySource[sourceID], state.markViewed(messageID) else { return }
         newMessagesBySource[sourceID] = state
     }
 
     func markAllMessagesViewed(for page: MessagePage) {
+        markPageExpanded(for: page)
         var attentionBySource = newMessagesBySource
         switch page {
         case .all:
