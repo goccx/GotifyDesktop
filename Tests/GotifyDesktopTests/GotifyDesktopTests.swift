@@ -16,10 +16,12 @@ struct GotifyDesktopTests {
         UserDefaults.standard.set("english", forKey: "language")
         #expect(Localized.string("sidebar.allMessages") == "All Messages")
         #expect(Localized.string("connection.notConfigured") == "No server configured")
+        #expect(Localized.string("message.markAllRead") == "Mark All as Read")
 
         UserDefaults.standard.set("simplifiedChinese", forKey: "language")
         #expect(Localized.string("sidebar.allMessages") == "所有消息")
         #expect(Localized.string("connection.notConfigured") == "尚未配置服务端")
+        #expect(Localized.string("message.markAllRead") == "全部标记已读")
     }
 
     @Test

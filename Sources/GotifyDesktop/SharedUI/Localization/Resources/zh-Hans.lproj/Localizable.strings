@@ -54,6 +54,7 @@
 "message.detail.back" = "返回消息列表";
 "message.detail.back.hint" = "返回当前消息列表。";
 "message.markAllViewed" = "全部查看";
+"message.markAllRead" = "全部标记已读";
 "message.showNewMessages" = "显示新消息";
 "message.latestMessagesAvailable" = "有最新消息可显示";
 "message.newMessagesAccessibility" = "%lld 条新消息";

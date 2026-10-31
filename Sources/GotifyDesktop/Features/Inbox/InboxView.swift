@@ -39,6 +39,9 @@ struct InboxView: View {
                 reselectCurrentItem: {
                     sidebarReselectionVersion = UUID()
                 },
+                markAllMessagesViewed: { targetPage in
+                    messageStore.markAllMessagesViewed(for: targetPage)
+                },
                 requestBulkDelete: { targetPage in
                     pendingBulkDeletePage = targetPage
                 }
@@ -57,6 +60,7 @@ struct InboxView: View {
                 isNewMessage: { messageStore.isNewMessage($0.id, sourceID: $0.sourceID) },
                 clientToken: serverPreferences.clientToken,
                 markMessageViewed: messageStore.markMessageViewed,
+                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: page) },
                 retryLoading: loadSelectedPage,
                 loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: page.sourceID, gapID: gapID) },
                 loadNextPage: { try await serverPreferences.loadNextPage(for: page.sourceID) },
@@ -332,6 +336,7 @@ private struct SidebarView: View {
     let newMessageCountsBySource: [Int64: Int]
     let clientToken: String
     let reselectCurrentItem: () -> Void
+    let markAllMessagesViewed: (MessagePage) -> Void
     let requestBulkDelete: (MessagePage) -> Void
     @State private var clickTarget = SidebarTableClickTarget()
 
@@ -347,6 +352,15 @@ private struct SidebarView: View {
             .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
             .listRowBackground(SidebarSelectionBackground(isSelected: selection == .allMessages))
             .contextMenu {
+                Button {
+                    markAllMessagesViewed(.all)
+                } label: {
+                    Label(Localized.string("message.markAllRead"), systemImage: "checkmark.circle")
+                }
+                .accessibilityIdentifier("sidebar-mark-all-read-button")
+
+                Divider()
+
                 Button(role: .destructive) {
                     requestBulkDelete(.all)
                 } label: {
@@ -369,6 +383,15 @@ private struct SidebarView: View {
                 .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
                 .listRowBackground(SidebarSelectionBackground(isSelected: selection == item))
                 .contextMenu {
+                    Button {
+                        markAllMessagesViewed(.application(source.id))
+                    } label: {
+                        Label(Localized.string("message.markAllRead"), systemImage: "checkmark.circle")
+                    }
+                    .accessibilityIdentifier("sidebar-mark-source-read-\(source.id)")
+
+                    Divider()
+
                     Button(role: .destructive) {
                         requestBulkDelete(.application(source.id))
                     } label: {
@@ -543,6 +566,7 @@ private struct ReadingCanvas: View {
     let isNewMessage: (GotifyMessage) -> Bool
     let clientToken: String
     let markMessageViewed: (Int64, Int64) -> Void
+    let markAllMessagesViewed: () -> Void
     let retryLoading: () -> Void
     let loadMore: (UUID) async throws -> Void
     let loadNextPage: () async throws -> Void
@@ -596,6 +620,7 @@ private struct ReadingCanvas: View {
                             revealPendingLiveMessages: revealPendingLiveMessages,
                             setMessageVisibility: setMessageVisibility,
                             consumeScrollAnchor: consumeScrollAnchor,
+                            markAllMessagesViewed: markAllMessagesViewed,
                             deleteMessage: deleteMessage,
                             requestBulkDelete: requestBulkDelete
                         ) { message in
@@ -652,6 +677,7 @@ private struct MessageListView: View {
     let revealPendingLiveMessages: () async -> Void
     let setMessageVisibility: (Int64, Bool) -> Void
     let consumeScrollAnchor: (Int64) -> Void
+    let markAllMessagesViewed: () -> Void
     let deleteMessage: (GotifyMessage) -> Void
     let requestBulkDelete: () -> Void
     let selectMessage: (GotifyMessage) -> Void
@@ -678,6 +704,7 @@ private struct MessageListView: View {
                             locale: locale,
                             isPresented: isPresented,
                             selectMessage: selectMessage,
+                            markAllMessagesViewed: markAllMessagesViewed,
                             deleteMessage: deleteMessage,
                             requestBulkDelete: requestBulkDelete,
                             loadMore: loadMore,
@@ -846,6 +873,7 @@ private struct MessageTimelineListRow: View {
     let locale: Locale
     let isPresented: Bool
     let selectMessage: (GotifyMessage) -> Void
+    let markAllMessagesViewed: () -> Void
     let deleteMessage: (GotifyMessage) -> Void
     let requestBulkDelete: () -> Void
     let loadMore: (UUID) async throws -> Void
@@ -872,6 +900,13 @@ private struct MessageTimelineListRow: View {
                     .accessibilityIdentifier("swipe-delete-message-\(message.id)")
                 }
                 .contextMenu {
+                    Button(action: markAllMessagesViewed) {
+                        Label(Localized.string("message.markAllRead"), systemImage: "checkmark.circle")
+                    }
+                    .accessibilityIdentifier("context-mark-all-read-\(message.id)")
+
+                    Divider()
+
                     Button(role: .destructive) {
                         deleteMessage(message)
                     } label: {

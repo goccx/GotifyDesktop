@@ -54,6 +54,7 @@
 "message.detail.back" = "Back to messages";
 "message.detail.back.hint" = "Returns to the current message list.";
 "message.markAllViewed" = "Mark all as viewed";
+"message.markAllRead" = "Mark All as Read";
 "message.showNewMessages" = "Show new messages";
 "message.latestMessagesAvailable" = "Latest messages available";
 "message.newMessagesAccessibility" = "%lld new messages";
