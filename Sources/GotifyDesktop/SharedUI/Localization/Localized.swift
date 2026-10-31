@@ -14,22 +14,27 @@ enum Localized {
         String.localizedStringWithFormat(string(key), value)
     }
 
-    /// Resolves the resource bundle inside a packaged macOS `.app` (`Contents/Resources/`) first
-    /// because SwiftPM's generated `Bundle.module` checks `Bundle.main.bundleURL` (the `.app` root,
-    /// where `codesign` forbids placing loose bundles) and the build machine's absolute path.
+    private final class BundleLocator {}
+
+    /// Resolves the resource bundle inside a packaged macOS `.app` (`Contents/Resources/`) or
+    /// relative to the running executable/test bundle without referencing SwiftPM's `Bundle.module`
+    /// (which embeds the build machine's absolute directory path into the binary).
     private static let packageBundle: Bundle = {
         let bundleName = "GotifyDesktop_GotifyDesktop.bundle"
-        let candidates: [URL?] = [
+        let codeBundle = Bundle(for: BundleLocator.self)
+        let directCandidates: [URL?] = [
             Bundle.main.resourceURL?.appendingPathComponent(bundleName),
+            codeBundle.resourceURL?.appendingPathComponent(bundleName),
             Bundle.main.bundleURL.appendingPathComponent(bundleName),
-            Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent(bundleName)
+            codeBundle.bundleURL.deletingLastPathComponent().appendingPathComponent(bundleName),
+            Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent(bundleName),
         ]
-        for candidate in candidates {
+        for candidate in directCandidates {
             if let url = candidate, let bundle = Bundle(url: url) {
                 return bundle
             }
         }
-        return Bundle.module
+        return .main
     }()
 
     private static var selectedBundle: Bundle {

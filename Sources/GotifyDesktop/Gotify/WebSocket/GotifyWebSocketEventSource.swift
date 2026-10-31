@@ -110,11 +110,13 @@ final class StarscreamGotifyWebSocketEventSource: GotifyWebSocketEventSource, @u
 
     /// Preserve a configured reverse-proxy subpath while swapping only the transport and endpoint.
     private static func makeStreamURL(from serverURL: URL) -> URL {
-        var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false) else {
+            return serverURL.appendingPathComponent("stream")
+        }
         components.scheme = components.scheme == "https" ? "wss" : "ws"
         components.path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/stream"
         if !components.path.hasPrefix("/") { components.path = "/" + components.path }
         components.query = nil
-        return components.url!
+        return components.url ?? serverURL.appendingPathComponent("stream")
     }
 }

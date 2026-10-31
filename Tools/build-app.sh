@@ -19,6 +19,7 @@ assemble_app_bundle() {
   rm -rf "$app_path"
   mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
   cp "$bin_path/GotifyDesktop" "$app_path/Contents/MacOS/GotifyDesktop"
+  install_name_tool -delete_rpath "/Library/Developer/CommandLineTools/Library/Developer/Frameworks" "$app_path/Contents/MacOS/GotifyDesktop" 2>/dev/null || true
   if [[ "$strip_binary" == "true" ]]; then
     strip -x "$app_path/Contents/MacOS/GotifyDesktop"
   fi
@@ -66,14 +67,14 @@ if [[ "$build_configuration" == "release" ]]; then
   mkdir -p "$release_dir"
 
   # 1. Apple Silicon (arm64)
-  swift build --build-path "$build_dir" -c release --triple arm64-apple-macosx12.0 --product GotifyDesktop >&2
+  swift build --build-path "$build_dir" -c release --triple arm64-apple-macosx12.0 -Xlinker -dead_strip --product GotifyDesktop >&2
   arm64_bin_path="$(swift build --build-path "$build_dir" -c release --triple arm64-apple-macosx12.0 --show-bin-path)"
   arm64_app_path="$(assemble_app_bundle "$arm64_bin_path" "true")"
   arm64_dmg_path="$release_dir/GotifyDesktop-macOS-arm64.dmg"
   package_dmg "$arm64_app_path" "$arm64_dmg_path"
 
   # 2. Intel (amd64 / x86_64)
-  swift build --build-path "$build_dir" -c release --triple x86_64-apple-macosx12.0 --product GotifyDesktop >&2
+  swift build --build-path "$build_dir" -c release --triple x86_64-apple-macosx12.0 -Xlinker -dead_strip --product GotifyDesktop >&2
   amd64_bin_path="$(swift build --build-path "$build_dir" -c release --triple x86_64-apple-macosx12.0 --show-bin-path)"
   amd64_app_path="$(assemble_app_bundle "$amd64_bin_path" "true")"
   amd64_dmg_path="$release_dir/GotifyDesktop-macOS-amd64.dmg"
@@ -86,7 +87,7 @@ if [[ "$build_configuration" == "release" ]]; then
 
   printf '%s\n' "$release_dir"
 else
-  swift build --build-path "$build_dir" -c "$build_configuration" --product GotifyDesktop >&2
+  swift build --build-path "$build_dir" -c "$build_configuration" -Xlinker -dead_strip --product GotifyDesktop >&2
   bin_path="$(swift build --build-path "$build_dir" -c "$build_configuration" --show-bin-path)"
   assemble_app_bundle "$bin_path" "false"
 fi

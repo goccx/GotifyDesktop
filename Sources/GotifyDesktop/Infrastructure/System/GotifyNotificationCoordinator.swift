@@ -33,7 +33,19 @@ final class GotifyNotificationCoordinator: NSObject, ObservableObject, GotifyMes
         super.init()
         // AppKit suppresses a frontmost app by default; Gotify banners must stay useful while its window is open.
         notificationCenter.delegate = self
-        registerWithSystemNotificationCenterIfNeeded()
+        if NSApp != nil, NSApp.isRunning {
+            registerWithSystemNotificationCenterIfNeeded()
+        } else {
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didFinishLaunchingNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.registerWithSystemNotificationCenterIfNeeded()
+                }
+            }
+        }
     }
 
     /// Registers the packaged `.app` with macOS Notification Center on first launch so the system
@@ -62,9 +74,9 @@ final class GotifyNotificationCoordinator: NSObject, ObservableObject, GotifyMes
         openSystemNotificationSettings()
     }
 
-    /// Opens the macOS System Settings -> Notifications pane directly.
+    /// Opens the macOS System Preferences / System Settings -> Notifications pane directly across macOS 12+.
     func openSystemNotificationSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") else {
             return
         }
         NSWorkspace.shared.open(url)

@@ -122,6 +122,15 @@ final class AppPreferences: ObservableObject {
         appearance = Defaults[.appearance]
         language = Defaults[.language]
         applyAppearance()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didFinishLaunchingNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.applyAppearance()
+            }
+        }
     }
 
     /// AppKit owns window chrome and menu-bar appearance, so this must not be limited to SwiftUI content.
