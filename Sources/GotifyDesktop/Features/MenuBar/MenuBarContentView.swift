@@ -30,6 +30,19 @@ final class AppWindowCoordinator: NSObject {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] notification in
+                guard let self,
+                      let closingWindow = notification.object as? NSWindow,
+                      self.isSettingsWindow(closingWindow)
+                else { return }
+                DispatchQueue.main.async {
+                    self.updateActivationPolicy(ignoringClosingWindow: closingWindow)
+                }
+            }
+            .store(in: &cancellables)
+
         windowDiscoveryCancellable = NotificationCenter.default.publisher(for: NSWindow.didUpdateNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
@@ -44,16 +57,35 @@ final class AppWindowCoordinator: NSObject {
         }
     }
 
+    private func isSettingsWindow(_ window: NSWindow) -> Bool {
+        window.title.contains("设置")
+            || window.title.contains("Settings")
+            || window.title.contains("Preferences")
+    }
+
     private func attachMainWindowIfCandidate(_ window: NSWindow) {
         guard window.canBecomeMain,
               !window.className.contains("StatusBar"),
-              !window.title.contains("设置"),
-              !window.title.contains("Settings"),
-              !window.title.contains("Preferences")
+              !isSettingsWindow(window)
         else { return }
-        guard window !== mainWindow else { return }
+
+        if let mainWindow {
+            if window !== mainWindow {
+                // Close any duplicate WindowGroup window immediately and activate the single mainWindow.
+                DispatchQueue.main.async { [weak self] in
+                    window.isRestorable = false
+                    window.delegate = nil
+                    window.orderOut(nil)
+                    window.close()
+                    self?.openMainWindow()
+                }
+            }
+            return
+        }
+
         mainWindow = window
         windowDiscoveryCancellable = nil
+        window.isRestorable = false
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 900, height: 600)
         if window.frame.width < 900 || window.frame.height < 600 {
@@ -68,16 +100,43 @@ final class AppWindowCoordinator: NSObject {
 
     @objc private func handleCloseButton(_ sender: Any?) {
         mainWindow?.orderOut(nil)
+        updateActivationPolicy(ignoringClosingWindow: nil)
+    }
+
+    private func updateActivationPolicy(ignoringClosingWindow: NSWindow?) {
+        let hasVisibleAppWindow = (NSApp?.windows ?? []).contains { window in
+            guard window !== ignoringClosingWindow,
+                  window.canBecomeMain,
+                  !window.className.contains("StatusBar")
+            else { return false }
+            return window.isVisible || window.isMiniaturized
+        }
+        if !hasVisibleAppWindow, NSApp.activationPolicy() != .accessory {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    private func ensureRegularActivationPolicy() {
+        if NSApp.activationPolicy() != .regular {
+            NSApp.setActivationPolicy(.regular)
+        }
     }
 
     func openMainWindow() {
+        ensureRegularActivationPolicy()
         if let mainWindow {
+            if mainWindow.isMiniaturized {
+                mainWindow.deminiaturize(nil)
+            }
             mainWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        if let candidate = NSApp.windows.first(where: { $0.canBecomeMain && !$0.className.contains("StatusBar") }) {
+        if let candidate = NSApp.windows.first(where: { $0.canBecomeMain && !$0.className.contains("StatusBar") && !isSettingsWindow($0) }) {
             attachMainWindowIfCandidate(candidate)
+            if candidate.isMiniaturized {
+                candidate.deminiaturize(nil)
+            }
             candidate.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -86,6 +145,7 @@ final class AppWindowCoordinator: NSObject {
     }
 
     func openSettingsWindow() {
+        ensureRegularActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
         if let appMenu = NSApp.mainMenu?.items.first?.submenu,
            let index = appMenu.items.firstIndex(where: { $0.keyEquivalent == "," }) {

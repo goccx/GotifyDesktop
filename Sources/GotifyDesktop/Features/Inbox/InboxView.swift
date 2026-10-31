@@ -10,14 +10,20 @@ struct InboxView: View {
     /// The token is supplied only to authenticated icon requests and is never serialized by the image cache.
     @EnvironmentObject private var serverPreferences: ServerPreferences
     @State private var selection: SidebarSelection? = .allMessages
+    @State private var readyPage: MessagePage = .all
+    @State private var transitionID = UUID()
+    @State private var pageSwitchTask: Task<Void, Never>?
     @State private var pendingSingleDeleteMessage: GotifyMessage?
     @State private var pendingBulkDeletePage: MessagePage?
     @State private var showsDeleteErrorAlert = false
 
     var body: some View {
-        // Async callbacks keep the page that rendered them; a later selection cannot retarget
-        // an old footer or disappearance callback to another application.
+        // `page` always follows `selectedPage` at T0 so the previous page's messages can never
+        // linger on screen. When switching to a non-empty page, `isTransitioning` is synchronously
+        // true on Frame T0, presenting `.loading` immediately until the T0 frame commits.
         let page = selectedPage
+        let pageItems = messageStore.timelineItems(for: page)
+        let isTransitioning = readyPage != page && !pageItems.isEmpty
         SplitNavigationContainer {
             SidebarView(
                 selection: $selection,
@@ -31,11 +37,11 @@ struct InboxView: View {
             )
         } detail: {
             ReadingCanvas(
-                timelineItems: messageStore.timelineItems(for: page),
+                timelineItems: isTransitioning ? [] : pageItems,
                 page: page,
                 navigationTitle: navigationTitle,
-                pageLoadState: messageStore.pageLoadState(for: page),
-                hasNextPage: messageStore.hasNextPage(for: page),
+                pageLoadState: isTransitioning ? .loading(transitionID) : messageStore.pageLoadState(for: page),
+                hasNextPage: !isTransitioning && messageStore.hasNextPage(for: page),
                 scrollAnchorID: messageStore.scrollAnchorID(for: page),
                 hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: page),
                 newMessageCount: messageStore.newMessageCount(for: page),
@@ -125,7 +131,45 @@ struct InboxView: View {
             ApplicationMenuLocalization.apply(appName: Localized.string("app.name"))
         }
         .onChange(of: selection) { _ in
-            loadSelectedPage()
+            schedulePageSwitch(to: selectedPage)
+        }
+    }
+
+    private func schedulePageSwitch(to targetPage: MessagePage) {
+        pageSwitchTask?.cancel()
+        let sourceID = targetPage.sourceID
+        let hasMessages = !messageStore.timelineItems(for: targetPage).isEmpty
+
+        if !hasMessages {
+            readyPage = targetPage
+            Task { await serverPreferences.loadMessages(for: sourceID) }
+            return
+        }
+
+        // Frame T0 is already rendering `.loading(transitionID)` with `timelineItems: []`
+        // synchronously via `isTransitioning`. Wait for T0 to commit to WindowServer, then
+        // mark `readyPage = targetPage` so Frame T1 mounts the target message list.
+        transitionID = UUID()
+        pageSwitchTask = Task { @MainActor in
+            await Self.waitForCurrentFrameCommit()
+            guard !Task.isCancelled else { return }
+            readyPage = targetPage
+            await serverPreferences.loadMessages(for: sourceID)
+        }
+    }
+
+    /// Bridges CoreAnimation's transaction commit callback into structured concurrency (zero sleep).
+    /// Resumes on the next main-queue turn strictly after the current T0 frame has committed.
+    @MainActor
+    private static func waitForCurrentFrameCommit() async {
+        await withCheckedContinuation { continuation in
+            let existingBlock = CATransaction.completionBlock()
+            CATransaction.setCompletionBlock {
+                existingBlock?()
+                DispatchQueue.main.async {
+                    continuation.resume()
+                }
+            }
         }
     }
 

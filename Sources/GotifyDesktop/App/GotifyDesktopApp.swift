@@ -4,15 +4,41 @@ import SwiftUI
 
 @MainActor
 final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Register after SwiftUI.AppDelegate finishes its own launch setup so Dock click / `open -a`
+        // (`kAEReopenApplication`) always routes through our single-window coordinator.
+        DispatchQueue.main.async {
+            NSAppleEventManager.shared().setEventHandler(
+                self,
+                andSelector: #selector(self.handleReopenAppleEvent(_:withReplyEvent:)),
+                forEventClass: AEEventClass(kCoreEventClass),
+                andEventID: AEEventID(kAEReopenApplication)
+            )
+        }
+    }
+
+    @objc private func handleReopenAppleEvent(
+        _ event: NSAppleEventDescriptor,
+        withReplyEvent replyEvent: NSAppleEventDescriptor
+    ) {
+        AppWindowCoordinator.shared.openMainWindow()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            AppWindowCoordinator.shared.openMainWindow()
-        }
-        return true
+        AppWindowCoordinator.shared.openMainWindow()
+        return false
+    }
+
+    func application(_ app: NSApplication, shouldSaveApplicationState coder: NSCoder) -> Bool {
+        false
+    }
+
+    func application(_ app: NSApplication, shouldRestoreApplicationState coder: NSCoder) -> Bool {
+        false
     }
 }
 
@@ -20,18 +46,41 @@ final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct GotifyDesktopApp: App {
     @NSApplicationDelegateAdaptor(GotifyAppDelegate.self) private var appDelegate
-    /// Factory owns the process-wide in-memory session; quitting the app releases it.
-    @StateObject private var messageStore: MessageStore
-    /// Preferences are deliberately limited to non-message UI choices.
-    @StateObject private var preferences: AppPreferences
-    /// Notification choices are persistent UI preferences, never message data.
-    @StateObject private var notificationPreferences: NotificationPreferences
-    /// The coordinator bridges one in-memory live delivery to macOS presentation and audio.
-    @StateObject private var notificationCoordinator: GotifyNotificationCoordinator
-    /// Server configuration is separate from UI preferences because it owns connection lifecycle and token encryption.
-    @StateObject private var serverPreferences: ServerPreferences
-    /// Native AppKit status item keeps menu-bar behavior identical from macOS 12 through macOS 15+.
-    @StateObject private var menuBarController: MenuBarStatusController
+    @StateObject private var bootstrap = GotifyAppBootstrap()
+
+    var body: some Scene {
+        WindowGroup(Localized.string("app.name")) {
+            InboxView()
+                .environmentObject(bootstrap.messageStore)
+                .environmentObject(bootstrap.preferences)
+                .environmentObject(bootstrap.notificationPreferences)
+                .environmentObject(bootstrap.notificationCoordinator)
+                .environmentObject(bootstrap.serverPreferences)
+                .environment(\.locale, bootstrap.preferences.language.locale)
+        }
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
+
+        Settings {
+            SettingsView()
+                .environmentObject(bootstrap.preferences)
+                .environmentObject(bootstrap.serverPreferences)
+                .environmentObject(bootstrap.notificationPreferences)
+                .environmentObject(bootstrap.notificationCoordinator)
+                .environment(\.locale, bootstrap.preferences.language.locale)
+        }
+    }
+}
+
+@MainActor
+private final class GotifyAppBootstrap: ObservableObject {
+    let messageStore: MessageStore
+    let preferences: AppPreferences
+    let notificationPreferences: NotificationPreferences
+    let notificationCoordinator: GotifyNotificationCoordinator
+    let serverPreferences: ServerPreferences
+    let menuBarController: MenuBarStatusController
 
     init() {
         LegacyBundlePreferencesMigration.migrateIfNeeded()
@@ -45,40 +94,16 @@ struct GotifyDesktopApp: App {
         let menuBarController = MenuBarStatusController()
         menuBarController.configure(messageStore: store, preferences: preferences)
 
-        _messageStore = StateObject(wrappedValue: store)
-        _preferences = StateObject(wrappedValue: preferences)
-        _notificationPreferences = StateObject(wrappedValue: notificationPreferences)
-        _notificationCoordinator = StateObject(wrappedValue: notificationCoordinator)
-        _serverPreferences = StateObject(wrappedValue: serverPreferences)
-        _menuBarController = StateObject(wrappedValue: menuBarController)
+        self.messageStore = store
+        self.preferences = preferences
+        self.notificationPreferences = notificationPreferences
+        self.notificationCoordinator = notificationCoordinator
+        self.serverPreferences = serverPreferences
+        self.menuBarController = menuBarController
 
         // This process-level task restores a verified opt-in even when the main window remains closed.
         Task { @MainActor in
             await serverPreferences.restoreReceivingSessionIfNeeded()
-        }
-    }
-
-    var body: some Scene {
-        WindowGroup(Localized.string("app.name")) {
-            InboxView()
-                .environmentObject(messageStore)
-                .environmentObject(preferences)
-                .environmentObject(notificationPreferences)
-                .environmentObject(notificationCoordinator)
-                .environmentObject(serverPreferences)
-                .environment(\.locale, preferences.language.locale)
-        }
-        .commands {
-            CommandGroup(replacing: .newItem) {}
-        }
-
-        Settings {
-            SettingsView()
-                .environmentObject(preferences)
-                .environmentObject(serverPreferences)
-                .environmentObject(notificationPreferences)
-                .environmentObject(notificationCoordinator)
-                .environment(\.locale, preferences.language.locale)
         }
     }
 }

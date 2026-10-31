@@ -30,21 +30,22 @@ struct RelativeTimeLabel: View {
 
     /// The compact label keeps the list calm; the standard macOS hover affordance exposes the exact time.
     private var absoluteText: String {
-        date.formatted(
-            Date.FormatStyle(
-                date: .abbreviated,
-                time: .shortened,
-                locale: locale,
-                timeZone: TimeZone.autoupdatingCurrent
-            )
-                .hour(.twoDigits(amPM: .omitted))
-                .minute(.twoDigits)
-        )
+        MessageAbsoluteTimeFormat.listTime(date, locale: locale)
     }
 }
 
 /// Keeps full absolute timestamps consistent across list and detail while forcing a 24-hour clock.
 enum MessageAbsoluteTimeFormat {
+    private struct CacheKey: Hashable {
+        let minuteBucket: Int64
+        let localeIdentifier: String
+        let timeZoneIdentifier: String
+    }
+
+    private static let lock = NSLock()
+    private static var styleByLocale: [String: Date.FormatStyle] = [:]
+    private static var formattedCache: [CacheKey: String] = [:]
+
     static func listTime(_ date: Date, locale: Locale) -> String {
         formatted(date, locale: locale)
     }
@@ -55,16 +56,43 @@ enum MessageAbsoluteTimeFormat {
 
     /// Date components follow the in-app language; the current macOS time zone and 24-hour time remain unchanged.
     private static func formatted(_ date: Date, locale: Locale) -> String {
-        date.formatted(
-            Date.FormatStyle(
+        lock.lock()
+        defer { lock.unlock() }
+
+        let timeZone = TimeZone.autoupdatingCurrent
+        let minuteBucket = Int64(floor(date.timeIntervalSince1970 / 60.0))
+        let cacheKey = CacheKey(
+            minuteBucket: minuteBucket,
+            localeIdentifier: locale.identifier,
+            timeZoneIdentifier: timeZone.identifier
+        )
+        if let cached = formattedCache[cacheKey] {
+            return cached
+        }
+
+        let styleKey = "\(locale.identifier)|\(timeZone.identifier)"
+        let style: Date.FormatStyle
+        if let existing = styleByLocale[styleKey] {
+            style = existing
+        } else {
+            let created = Date.FormatStyle(
                 date: .abbreviated,
                 time: .shortened,
                 locale: locale,
-                timeZone: TimeZone.autoupdatingCurrent
+                timeZone: timeZone
             )
                 .hour(.twoDigits(amPM: .omitted))
                 .minute(.twoDigits)
-        )
+            styleByLocale[styleKey] = created
+            style = created
+        }
+
+        let result = date.formatted(style)
+        if formattedCache.count >= 1_024 {
+            formattedCache.removeAll(keepingCapacity: true)
+        }
+        formattedCache[cacheKey] = result
+        return result
     }
 }
 
