@@ -2,180 +2,53 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Coordinates single-instance main window activation and native Settings window presentation
-/// across macOS 12+ without touching SwiftUI's internal `NSWindow.delegate`.
+/// Single-instance `NSWindowController` managing the main application window via `NSHostingController`
+/// and standard `NSWindowDelegate.windowShouldClose(_:)`, avoiding `WindowGroup` multi-window spawning
+/// and state-restoration edge cases.
 @MainActor
-final class AppWindowCoordinator: NSObject {
+final class AppWindowCoordinator: NSWindowController, NSWindowDelegate {
     static let shared = AppWindowCoordinator()
 
-    private var mainWindow: NSWindow?
-    private var fallbackRootViewProvider: (() -> AnyView)?
-    private var cancellables = Set<AnyCancellable>()
-    private var windowDiscoveryCancellable: AnyCancellable?
-
-    override init() {
-        super.init()
-        NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] notification in
-                guard let window = notification.object as? NSWindow else { return }
-                self?.attachMainWindowIfCandidate(window)
-            }
-            .store(in: &cancellables)
-
-        NotificationCenter.default.publisher(for: NSWindow.didBecomeMainNotification)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] notification in
-                guard let window = notification.object as? NSWindow else { return }
-                self?.attachMainWindowIfCandidate(window)
-            }
-            .store(in: &cancellables)
-
-        NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] notification in
-                guard let self,
-                      let closingWindow = notification.object as? NSWindow
-                else { return }
-                if closingWindow === self.mainWindow {
-                    self.mainWindow = nil
-                }
-            }
-            .store(in: &cancellables)
-
-        windowDiscoveryCancellable = NotificationCenter.default.publisher(for: NSWindow.didUpdateNotification)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] notification in
-                guard let self, self.mainWindow == nil, let window = notification.object as? NSWindow else { return }
-                self.attachMainWindowIfCandidate(window)
-            }
+    private init() {
+        super.init(window: nil)
     }
 
-    var hasMainWindow: Bool {
-        if mainWindow != nil { return true }
-        return (NSApp?.windows ?? []).contains {
-            $0.canBecomeMain && !$0.className.contains("StatusBar") && !isSettingsWindow($0)
-        }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
-    func configureFallbackRootView(_ provider: @escaping () -> AnyView) {
-        fallbackRootViewProvider = provider
+    func configure<Content: View>(rootView: Content) {
+        guard window == nil else { return }
+        let hostingController = NSHostingController(rootView: rootView)
+        let mainWindow = NSWindow(contentViewController: hostingController)
+        mainWindow.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        mainWindow.toolbarStyle = .unified
+        mainWindow.title = Localized.string("app.name")
+        mainWindow.minSize = NSSize(width: 900, height: 600)
+        mainWindow.setContentSize(NSSize(width: 1_080, height: 720))
+        mainWindow.center()
+        mainWindow.isRestorable = false
+        mainWindow.isReleasedWhenClosed = false
+        mainWindow.delegate = self
+        self.window = mainWindow
     }
 
-    func startObserving() {
-        for window in NSApp?.windows ?? [] {
-            attachMainWindowIfCandidate(window)
-        }
-    }
-
-    func ensureMainWindowPresentedAtLaunch() {
-        startObserving()
-        if !hasMainWindow {
-            openMainWindow()
-        }
-    }
-
-    private func isSettingsWindow(_ window: NSWindow) -> Bool {
-        window.title.contains("设置")
-            || window.title.contains("Settings")
-            || window.title.contains("Preferences")
-    }
-
-    private func configureCloseButton(for window: NSWindow) {
-        if let closeButton = window.standardWindowButton(.closeButton) {
-            closeButton.target = self
-            closeButton.action = #selector(handleCloseButton(_:))
-        }
-    }
-
-    private func attachMainWindowIfCandidate(_ window: NSWindow) {
-        guard window.canBecomeMain,
-              !window.className.contains("StatusBar"),
-              !isSettingsWindow(window)
-        else { return }
-
-        if let mainWindow {
-            if window !== mainWindow {
-                // Close any duplicate WindowGroup window immediately and activate the single mainWindow.
-                DispatchQueue.main.async { [weak self] in
-                    window.isRestorable = false
-                    window.delegate = nil
-                    window.orderOut(nil)
-                    window.close()
-                    self?.openMainWindow()
-                }
-            } else {
-                configureCloseButton(for: mainWindow)
-            }
-            return
-        }
-
-        mainWindow = window
-        windowDiscoveryCancellable = nil
-        window.isRestorable = false
-        window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 900, height: 600)
-        if window.frame.width < 900 || window.frame.height < 600 {
-            window.setContentSize(NSSize(width: 1_080, height: 720))
-            window.center()
-        }
-        configureCloseButton(for: window)
-    }
-
-    @objc private func handleCloseButton(_ sender: Any?) {
-        mainWindow?.orderOut(nil)
-    }
-
-    private func ensureRegularActivationPolicy() {
-        if NSApp.activationPolicy() != .regular {
-            NSApp.setActivationPolicy(.regular)
-        }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        return false
     }
 
     func openMainWindow() {
-        ensureRegularActivationPolicy()
-        if let mainWindow {
-            configureCloseButton(for: mainWindow)
-            if mainWindow.isMiniaturized {
-                mainWindow.deminiaturize(nil)
-            }
-            mainWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
+        guard let window else { return }
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
         }
-        if let candidate = NSApp.windows.first(where: { $0.canBecomeMain && !$0.className.contains("StatusBar") && !isSettingsWindow($0) }) {
-            attachMainWindowIfCandidate(candidate)
-            if candidate.isMiniaturized {
-                candidate.deminiaturize(nil)
-            }
-            candidate.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        // Ask SwiftUI's AppDelegate to materialize the initial WindowGroup window if restoration suppressed it.
-        _ = NSApp.delegate?.applicationShouldHandleReopen?(NSApp, hasVisibleWindows: false)
-        startObserving()
-        if let mainWindow {
-            mainWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        // Final deterministic fallback: construct the main NSWindow directly if SwiftUI still has not created one.
-        if let fallbackRootViewProvider {
-            let controller = NSHostingController(rootView: fallbackRootViewProvider())
-            let window = NSWindow(contentViewController: controller)
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-            window.title = Localized.string("app.name")
-            window.setContentSize(NSSize(width: 1_080, height: 720))
-            window.center()
-            attachMainWindowIfCandidate(window)
-            window.makeKeyAndOrderFront(nil)
-        }
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func openSettingsWindow() {
-        ensureRegularActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
         if let appMenu = NSApp.mainMenu?.items.first?.submenu,
            let index = appMenu.items.firstIndex(where: { $0.keyEquivalent == "," }) {
@@ -206,12 +79,7 @@ final class MenuBarStatusController: NSObject, ObservableObject, NSMenuDelegate 
         self.messageStore = messageStore
         self.preferences = preferences
 
-        // `GotifyAppBootstrap.init()` runs while `didFinishLaunchingNotification` is already being
-        // dispatched by AppKit (before `NSApp.isRunning` turns true). Scheduling on the main queue
-        // guarantees both status-item installation and initial window attachment always execute.
-        AppWindowCoordinator.shared.startObserving()
         DispatchQueue.main.async { [weak self] in
-            AppWindowCoordinator.shared.startObserving()
             self?.installStatusItemIfNeeded()
         }
     }
