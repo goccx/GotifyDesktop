@@ -37,23 +37,30 @@ enum Localized {
         return .main
     }()
 
-    private static var selectedBundle: Bundle {
-        let language = UserDefaults.standard.string(forKey: languagePreferenceKey)
-        let resourceName: String?
-
-        switch language {
-        case "english": resourceName = "en"
-        case "simplifiedChinese": resourceName = "zh-Hans"
-        default: resourceName = nil
-        }
-
-        guard let resourceName,
-              let path = packageBundle.path(forResource: resourceName.lowercased(), ofType: "lproj"),
+    private static let englishBundle: Bundle = {
+        guard let path = packageBundle.path(forResource: "en", ofType: "lproj"),
               let bundle = Bundle(path: path)
         else {
             return packageBundle
         }
-
         return bundle
+    }()
+
+    private static let simplifiedChineseBundle: Bundle = {
+        guard let path = packageBundle.path(forResource: "zh-hans", ofType: "lproj")
+                ?? packageBundle.path(forResource: "zh-Hans", ofType: "lproj"),
+              let bundle = Bundle(path: path)
+        else {
+            return packageBundle
+        }
+        return bundle
+    }()
+
+    private static var selectedBundle: Bundle {
+        switch UserDefaults.standard.string(forKey: languagePreferenceKey) {
+        case "english": return englishBundle
+        case "simplifiedChinese": return simplifiedChineseBundle
+        default: return packageBundle
+        }
     }
 }

@@ -34,6 +34,7 @@ final class GotifySessionController {
     private var reconnectAttemptSessionID: UUID?
     private var visiblePage: MessagePage = .all
     private var activePageLoadTask: Task<Void, Never>?
+    private var activePageLoadRequest: (page: MessagePage, requestID: UUID)?
     private var liveMessageBuffer: GotifyLiveMessageBuffer?
 
     init(messageStore: MessageStore, notifier: (any GotifyMessageNotifying)? = nil) {
@@ -72,11 +73,17 @@ final class GotifySessionController {
 
     /// Page loading is independent from the one global WebSocket: loaded pages reuse memory, idle pages fetch once.
     func loadMessages(for sourceID: Int64?) async {
+        let cancelledRequest = activePageLoadRequest
+        activePageLoadRequest = nil
         activePageLoadTask?.cancel()
         let targetPage = sourceID.map(MessagePage.application) ?? .all
         visiblePage = targetPage
         if let restClient = currentRESTClient {
             let task = Task<Void, Never> { @MainActor [weak self] in
+                if let cancelledRequest {
+                    await self?.messageStore.cancelLoading(cancelledRequest.page, requestID: cancelledRequest.requestID)
+                }
+                guard !Task.isCancelled else { return }
                 await self?.loadMessages(page: targetPage, client: restClient)
             }
             activePageLoadTask = task
@@ -166,6 +173,7 @@ final class GotifySessionController {
 
     private func stopSession(clearMessages: Bool, state: MessageStore.ConnectionState) async {
         activeSession = nil
+        activePageLoadRequest = nil
         activePageLoadTask?.cancel()
         activePageLoadTask = nil
         reconnectTask?.cancel()
@@ -310,8 +318,21 @@ final class GotifySessionController {
 
     private func loadMessages(page: MessagePage, client: GeneratedGotifyRESTClient, requestID: UUID? = nil) async {
         let claimedID: UUID?
-        if let requestID { claimedID = requestID } else { claimedID = await messageStore.beginLoading(page) }
+        if let requestID {
+            claimedID = requestID
+        } else {
+            guard !Task.isCancelled else { return }
+            claimedID = await messageStore.beginLoading(page)
+            if let claimedID {
+                activePageLoadRequest = (page: page, requestID: claimedID)
+            }
+        }
         guard let claimedID else { return }
+        defer {
+            if activePageLoadRequest?.requestID == claimedID {
+                activePageLoadRequest = nil
+            }
+        }
         do {
             try Task.checkCancellation()
             let result = try await client.fetchMessages(
