@@ -71,7 +71,11 @@ final class AppWindowCoordinator: NSObject {
     }
 
     private func isSettingsWindow(_ window: NSWindow) -> Bool {
-        window.title.contains("设置")
+        if let id = window.identifier?.rawValue,
+           id == "com_apple_SwiftUI_Settings_window" || id.contains("Settings_window") {
+            return true
+        }
+        return window.title.contains("设置")
             || window.title.contains("Settings")
             || window.title.contains("Preferences")
     }
@@ -140,7 +144,7 @@ final class AppWindowCoordinator: NSObject {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        _ = NSApp.delegate?.applicationShouldHandleReopen?(NSApp, hasVisibleWindows: false)
+        _ = NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
         startObserving()
         mainWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

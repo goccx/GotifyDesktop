@@ -8,11 +8,23 @@ final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
         super.init()
         // Disable macOS window state restoration so `NSPersistentUIManager` never restores
         // a "0 visible windows" snapshot after the main window was hidden with `orderOut(nil)`.
-        UserDefaults.standard.register(defaults: ["NSQuitAlwaysKeepsWindows": false])
+        UserDefaults.standard.register(defaults: [
+            "ApplePersistenceIgnoreState": true,
+            "NSQuitAlwaysKeepsWindows": false
+        ])
+        UserDefaults.standard.set(true, forKey: "ApplePersistenceIgnoreState")
         UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+        if let bundleID = Bundle.main.bundleIdentifier,
+           let libraryURL = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first {
+            let savedStateURL = libraryURL
+                .appendingPathComponent("Saved Application State", isDirectory: true)
+                .appendingPathComponent("\(bundleID).savedState", isDirectory: true)
+            try? FileManager.default.removeItem(at: savedStateURL)
+        }
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        UserDefaults.standard.set(true, forKey: "ApplePersistenceIgnoreState")
         UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
         NSWindow.allowsAutomaticWindowTabbing = false
         _ = AppWindowCoordinator.shared
@@ -23,20 +35,17 @@ final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
         AppWindowCoordinator.shared.startObserving()
         DispatchQueue.main.async {
             AppWindowCoordinator.shared.ensureMainWindowPresentedAtLaunch()
-            NSAppleEventManager.shared().setEventHandler(
-                self,
-                andSelector: #selector(self.handleReopenAppleEvent(_:withReplyEvent:)),
-                forEventClass: AEEventClass(kCoreEventClass),
-                andEventID: AEEventID(kAEReopenApplication)
-            )
         }
     }
 
-    @objc private func handleReopenAppleEvent(
-        _ event: NSAppleEventDescriptor,
-        withReplyEvent replyEvent: NSAppleEventDescriptor
-    ) {
-        AppWindowCoordinator.shared.openMainWindow()
+    func applicationWillTerminate(_ notification: Notification) {
+        if let bundleID = Bundle.main.bundleIdentifier,
+           let libraryURL = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first {
+            let savedStateURL = libraryURL
+                .appendingPathComponent("Saved Application State", isDirectory: true)
+                .appendingPathComponent("\(bundleID).savedState", isDirectory: true)
+            try? FileManager.default.removeItem(at: savedStateURL)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -75,9 +84,6 @@ struct GotifyDesktopApp: App {
                 .environmentObject(bootstrap.notificationCoordinator)
                 .environmentObject(bootstrap.serverPreferences)
                 .environment(\.locale, bootstrap.preferences.language.locale)
-        }
-        .commands {
-            CommandGroup(replacing: .newItem) {}
         }
 
         Settings {

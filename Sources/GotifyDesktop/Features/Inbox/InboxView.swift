@@ -17,15 +17,13 @@ struct InboxView: View {
     @State private var pendingSingleDeleteMessage: GotifyMessage?
     @State private var pendingBulkDeletePage: MessagePage?
     @State private var showsDeleteErrorAlert = false
-    @State private var sidebarReselectionVersion = UUID()
     @State private var selectedMessage: GotifyMessage?
     @State private var isNavigatingFromNotification = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // `page` always follows `selectedPage` at T0 so the previous page's messages can never
-        // linger on screen. When switching to a non-empty page, `isTransitioning` is synchronously
-        // true on Frame T0, presenting `.loading` immediately until the T0 frame commits.
+        // `page` always follows `selectedPage` at T0 so the sidebar selection highlight commits on
+        // Frame T0 without waiting for `NSTableView` (`List.id(page)`) construction.
         let page = selectedPage
         let pageItems = messageStore.timelineItems(for: page)
         let isTransitioning = readyPage != page && !pageItems.isEmpty
@@ -37,7 +35,10 @@ struct InboxView: View {
                 newMessageCountsBySource: newMessageCountsBySource,
                 clientToken: serverPreferences.clientToken,
                 reselectCurrentItem: {
-                    sidebarReselectionVersion = UUID()
+                    guard selectedMessage != nil else { return }
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                        selectedMessage = nil
+                    }
                 },
                 markAllMessagesViewed: { targetPage in
                     messageStore.markAllMessagesViewed(for: targetPage)
@@ -50,7 +51,6 @@ struct InboxView: View {
             ReadingCanvas(
                 timelineItems: isTransitioning ? [] : pageItems,
                 page: page,
-                sidebarReselectionVersion: sidebarReselectionVersion,
                 navigationTitle: navigationTitle,
                 pageLoadState: isTransitioning ? .loading(transitionID) : messageStore.pageLoadState(for: page),
                 hasNextPage: !isTransitioning && messageStore.hasNextPage(for: page),
@@ -71,6 +71,35 @@ struct InboxView: View {
                 requestBulkDelete: { pendingBulkDeletePage = page },
                 selectedMessage: $selectedMessage
             )
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        NSApp.keyWindow?.firstResponder?.tryToPerform(
+                            #selector(NSSplitViewController.toggleSidebar(_:)),
+                            with: nil
+                        )
+                    } label: {
+                        Image(systemName: "sidebar.left")
+                    }
+                    .help(Localized.string("sidebar.allMessages"))
+                }
+
+                ToolbarItem(placement: .primaryAction) {
+                    ConnectionStatusLabel(state: messageStore.connectionState, language: preferences.language)
+                }
+
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        AppWindowCoordinator.shared.openSettingsWindow()
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help(Localized.string("settings.open"))
+                    .accessibilityLabel(Localized.string("settings.open"))
+                    .accessibilityIdentifier("settings-button")
+                }
+            }
         }
         .confirmationDialog(
             Localized.string("message.delete.confirm.title"),
@@ -89,10 +118,7 @@ struct InboxView: View {
                 pendingSingleDeleteMessage = nil
             }
         } message: { targetMessage in
-            let summary = MessageMarkdownParser.plainTextSummary(
-                from: targetMessage.title.isEmpty ? targetMessage.body : targetMessage.title
-            )
-            Text(Localized.string("message.delete.confirm.description", summary))
+            Text(Localized.string("message.delete.confirm.description", targetMessage.listTitle))
         }
         .confirmationDialog(
             bulkDeleteConfirmationTitle(for: pendingBulkDeletePage),
@@ -120,23 +146,6 @@ struct InboxView: View {
             Button(Localized.string("message.delete.cancelAction"), role: .cancel) {}
         } message: {
             Text(Localized.string("inbox.deleteFailed.description"))
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                ConnectionStatusLabel(state: messageStore.connectionState, language: preferences.language)
-            }
-
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    AppWindowCoordinator.shared.openSettingsWindow()
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .labelStyle(.iconOnly)
-                .help(Localized.string("settings.open"))
-                .accessibilityLabel(Localized.string("settings.open"))
-                .accessibilityIdentifier("settings-button")
-            }
         }
         // The application menu is AppKit-owned rather than a SwiftUI view, so language changes require this bridge.
         .onAppear {
@@ -192,29 +201,24 @@ struct InboxView: View {
             return
         }
 
-        // Frame T0 is already rendering `.loading(transitionID)` with `timelineItems: []`
-        // synchronously via `isTransitioning`. Wait for T0 to commit to WindowServer, then
-        // mark `readyPage = targetPage` so Frame T1 mounts the target message list.
+        // Frame T0 renders `.loading(transitionID)` with `timelineItems: []` synchronously via
+        // `isTransitioning` and commits at the end of the current main RunLoop turn. Resuming on
+        // the next main-queue turn mounts the target list on Frame T1 without relying on
+        // `CATransaction.setCompletionBlock` (which SwiftUI overwrites during T0 or leaves idle on macOS 12).
         transitionID = UUID()
         pageSwitchTask = Task { @MainActor in
-            await Self.waitForCurrentFrameCommit()
+            await Self.waitForNextRunLoopTurn()
             guard !Task.isCancelled else { return }
             readyPage = targetPage
             await serverPreferences.loadMessages(for: sourceID)
         }
     }
 
-    /// Bridges CoreAnimation's transaction commit callback into structured concurrency (zero sleep).
-    /// Resumes on the next main-queue turn strictly after the current T0 frame has committed.
     @MainActor
-    private static func waitForCurrentFrameCommit() async {
+    private static func waitForNextRunLoopTurn() async {
         await withCheckedContinuation { continuation in
-            let existingBlock = CATransaction.completionBlock()
-            CATransaction.setCompletionBlock {
-                existingBlock?()
-                DispatchQueue.main.async {
-                    continuation.resume()
-                }
+            DispatchQueue.main.async {
+                continuation.resume()
             }
         }
     }
@@ -556,7 +560,6 @@ private struct ConnectionStatusLabel: View {
 private struct ReadingCanvas: View {
     let timelineItems: [MessageTimelineItem]
     let page: MessagePage
-    let sidebarReselectionVersion: UUID
     let navigationTitle: String
     let pageLoadState: MessagePageLoadState
     let hasNextPage: Bool
@@ -652,12 +655,6 @@ private struct ReadingCanvas: View {
             }
         }
         .navigationTitle(navigationTitle)
-        .onChange(of: sidebarReselectionVersion) { _ in
-            guard selectedMessage != nil else { return }
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-                selectedMessage = nil
-            }
-        }
     }
 }
 
@@ -1020,11 +1017,7 @@ private struct MessageRowContent: View, Equatable {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if isNew { Circle().fill(.blue).frame(width: 7, height: 7) }
-                    Text(
-                        MessageMarkdownParser.plainTextSummary(
-                            from: message.title.isEmpty ? message.body : message.title
-                        )
-                    )
+                    Text(message.listTitle)
                         .font(isNew ? .headline.weight(.semibold) : .headline)
                         .lineLimit(1)
                     Spacer(minLength: 8)
@@ -1032,7 +1025,7 @@ private struct MessageRowContent: View, Equatable {
                         .font(.caption)
                         .fixedSize(horizontal: true, vertical: false)
                 }
-                Text(MessageMarkdownParser.summaryAttributedString(from: message.body))
+                Text(message.listSummary)
                     .foregroundStyle(.secondary)
                     // Reserve identical summary height for short and long messages to avoid
                     // variable-height remeasurement when the native list appends a page.
