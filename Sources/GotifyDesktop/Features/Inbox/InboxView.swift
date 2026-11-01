@@ -17,30 +17,18 @@ struct InboxView: View {
     @State private var pendingSingleDeleteMessage: GotifyMessage?
     @State private var pendingBulkDeletePage: MessagePage?
     @State private var showsDeleteErrorAlert = false
+    @State private var sidebarReselectionVersion = UUID()
     @State private var selectedMessage: GotifyMessage?
     @State private var isNavigatingFromNotification = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // Strict Frame T0 rule: when `selection` changes (`readyPage != targetPage`), old messages must NEVER
-        // remain visible on screen. Frame T0 immediately hides the list layer and shows `.loading`
-        // (`ProgressView`) while keeping the underlying `NSTableView` mounted and intact; Frame T1
-        // swaps `readyPage` to `targetPage` so the reused `NSTableView` updates in-place.
-        let targetPage = selectedPage
-        let isTransitioning = readyPage != targetPage
-        let listPage = readyPage
-        let listItems = messageStore.timelineItems(for: listPage)
-        let targetItems = messageStore.timelineItems(for: targetPage)
-        let storeLoadState = messageStore.pageLoadState(for: targetPage)
-        let effectiveLoadState: MessagePageLoadState = {
-            if isTransitioning {
-                return .loading(transitionID)
-            }
-            if storeLoadState == .idle, targetItems.isEmpty, messageStore.connectionState == .connected {
-                return .loading(transitionID)
-            }
-            return storeLoadState
-        }()
+        // `page` always follows `selectedPage` at T0 so the previous page's messages can never
+        // linger on screen. When switching to a non-empty page, `isTransitioning` is synchronously
+        // true on Frame T0, presenting `.loading` immediately until the T0 frame commits.
+        let page = selectedPage
+        let pageItems = messageStore.timelineItems(for: page)
+        let isTransitioning = readyPage != page && !pageItems.isEmpty
         SplitNavigationContainer {
             SidebarView(
                 selection: $selection,
@@ -49,59 +37,40 @@ struct InboxView: View {
                 newMessageCountsBySource: newMessageCountsBySource,
                 clientToken: serverPreferences.clientToken,
                 reselectCurrentItem: {
-                    guard selectedMessage != nil else { return }
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-                        selectedMessage = nil
-                    }
+                    sidebarReselectionVersion = UUID()
                 },
-                markAllMessagesViewed: { pageToMark in
-                    messageStore.markAllMessagesViewed(for: pageToMark)
+                markAllMessagesViewed: { targetPage in
+                    messageStore.markAllMessagesViewed(for: targetPage)
                 },
-                requestBulkDelete: { pageToDelete in
-                    pendingBulkDeletePage = pageToDelete
+                requestBulkDelete: { targetPage in
+                    pendingBulkDeletePage = targetPage
                 }
             )
         } detail: {
             ReadingCanvas(
-                timelineItems: listItems,
-                page: listPage,
+                timelineItems: isTransitioning ? [] : pageItems,
+                page: page,
+                sidebarReselectionVersion: sidebarReselectionVersion,
                 navigationTitle: navigationTitle,
-                pageLoadState: effectiveLoadState,
-                hasNextPage: messageStore.hasNextPage(for: listPage),
-                scrollAnchorID: messageStore.scrollAnchorID(for: listPage),
-                hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: listPage),
-                unexpandedMessageCount: messageStore.unexpandedMessageCount(for: listPage),
+                pageLoadState: isTransitioning ? .loading(transitionID) : messageStore.pageLoadState(for: page),
+                hasNextPage: !isTransitioning && messageStore.hasNextPage(for: page),
+                scrollAnchorID: messageStore.scrollAnchorID(for: page),
+                hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: page),
+                unexpandedMessageCount: messageStore.unexpandedMessageCount(for: page),
                 isNewMessage: { messageStore.isNewMessage($0.id, sourceID: $0.sourceID) },
                 clientToken: serverPreferences.clientToken,
                 markMessageViewed: messageStore.markMessageViewed,
-                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: listPage) },
+                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: page) },
                 retryLoading: loadSelectedPage,
-                loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: listPage.sourceID, gapID: gapID) },
-                loadNextPage: { try await serverPreferences.loadNextPage(for: listPage.sourceID) },
-                revealPendingLiveMessages: { await messageStore.revealPendingLiveMessages(for: listPage) },
-                setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: listPage) },
-                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: listPage) },
+                loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: page.sourceID, gapID: gapID) },
+                loadNextPage: { try await serverPreferences.loadNextPage(for: page.sourceID) },
+                revealPendingLiveMessages: { await messageStore.revealPendingLiveMessages(for: page) },
+                setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: page) },
+                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: page) },
                 deleteMessage: { message in pendingSingleDeleteMessage = message },
-                requestBulkDelete: { pendingBulkDeletePage = listPage },
+                requestBulkDelete: { pendingBulkDeletePage = page },
                 selectedMessage: $selectedMessage
             )
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    ConnectionStatusLabel(state: messageStore.connectionState, language: preferences.language)
-                }
-
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        AppWindowCoordinator.shared.openSettingsWindow()
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .labelStyle(.iconOnly)
-                    .help(Localized.string("settings.open"))
-                    .accessibilityLabel(Localized.string("settings.open"))
-                    .accessibilityIdentifier("settings-button")
-                }
-            }
         }
         .confirmationDialog(
             Localized.string("message.delete.confirm.title"),
@@ -120,7 +89,10 @@ struct InboxView: View {
                 pendingSingleDeleteMessage = nil
             }
         } message: { targetMessage in
-            Text(Localized.string("message.delete.confirm.description", targetMessage.listTitle))
+            let summary = MessageMarkdownParser.plainTextSummary(
+                from: targetMessage.title.isEmpty ? targetMessage.body : targetMessage.title
+            )
+            Text(Localized.string("message.delete.confirm.description", summary))
         }
         .confirmationDialog(
             bulkDeleteConfirmationTitle(for: pendingBulkDeletePage),
@@ -149,6 +121,23 @@ struct InboxView: View {
         } message: {
             Text(Localized.string("inbox.deleteFailed.description"))
         }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                ConnectionStatusLabel(state: messageStore.connectionState, language: preferences.language)
+            }
+
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    AppWindowCoordinator.shared.openSettingsWindow()
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .labelStyle(.iconOnly)
+                .help(Localized.string("settings.open"))
+                .accessibilityLabel(Localized.string("settings.open"))
+                .accessibilityIdentifier("settings-button")
+            }
+        }
         // The application menu is AppKit-owned rather than a SwiftUI view, so language changes require this bridge.
         .onAppear {
             ApplicationMenuLocalization.apply(appName: Localized.string("app.name"))
@@ -172,8 +161,6 @@ struct InboxView: View {
             handleActivatedNotification(target)
         }
         .onChange(of: messageStore.sessionVersion) { _ in
-            pageSwitchTask?.cancel()
-            readyPage = selectedPage
             selectedMessage = nil
         }
     }
@@ -197,31 +184,37 @@ struct InboxView: View {
     private func schedulePageSwitch(to targetPage: MessagePage) {
         pageSwitchTask?.cancel()
         let sourceID = targetPage.sourceID
-        let hasCachedMessages = !messageStore.timelineItems(for: targetPage).isEmpty
+        let hasMessages = !messageStore.timelineItems(for: targetPage).isEmpty
 
-        // Frame T0 immediately hides the list layer (`opacity(0)`) and displays `.loading` with zero
-        // `NSTableView` mutations. For cached pages, Frame T1 swaps `readyPage` in-place; for uncached
-        // pages, `readyPage` swaps after the REST load finishes so `NSTableView` never tears down to 0
-        // rows in between (`100 -> 0 -> 100`).
+        if !hasMessages {
+            readyPage = targetPage
+            Task { await serverPreferences.loadMessages(for: sourceID) }
+            return
+        }
+
+        // Frame T0 is already rendering `.loading(transitionID)` with `timelineItems: []`
+        // synchronously via `isTransitioning`. Wait for T0 to commit to WindowServer, then
+        // mark `readyPage = targetPage` so Frame T1 mounts the target message list.
+        transitionID = UUID()
         pageSwitchTask = Task { @MainActor in
-            await Self.waitForNextRunLoopTurn()
+            await Self.waitForCurrentFrameCommit()
             guard !Task.isCancelled else { return }
-            if hasCachedMessages {
-                readyPage = targetPage
-                await serverPreferences.loadMessages(for: sourceID)
-            } else {
-                await serverPreferences.loadMessages(for: sourceID)
-                guard !Task.isCancelled else { return }
-                readyPage = targetPage
-            }
+            readyPage = targetPage
+            await serverPreferences.loadMessages(for: sourceID)
         }
     }
 
+    /// Bridges CoreAnimation's transaction commit callback into structured concurrency (zero sleep).
+    /// Resumes on the next main-queue turn strictly after the current T0 frame has committed.
     @MainActor
-    private static func waitForNextRunLoopTurn() async {
+    private static func waitForCurrentFrameCommit() async {
         await withCheckedContinuation { continuation in
-            DispatchQueue.main.async {
-                continuation.resume()
+            let existingBlock = CATransaction.completionBlock()
+            CATransaction.setCompletionBlock {
+                existingBlock?()
+                DispatchQueue.main.async {
+                    continuation.resume()
+                }
             }
         }
     }
@@ -255,9 +248,8 @@ struct InboxView: View {
     }
 
     /// The actor uses this transient signal only to protect the reading anchor during reclamation.
-    /// Coalesced on `@MainActor` so unmounting/mounting 100 rows on macOS 12 does not spawn 200 Tasks.
     private func setMessageVisibility(_ messageID: Int64, _ visible: Bool, for page: MessagePage) {
-        messageStore.recordRowVisibility(messageID, visible: visible, for: page)
+        Task { await messageStore.setMessageVisibility(messageID, visible: visible, for: page) }
     }
 
     private func consumeScrollAnchor(_ anchorID: Int64, for page: MessagePage) {
@@ -564,6 +556,7 @@ private struct ConnectionStatusLabel: View {
 private struct ReadingCanvas: View {
     let timelineItems: [MessageTimelineItem]
     let page: MessagePage
+    let sidebarReselectionVersion: UUID
     let navigationTitle: String
     let pageLoadState: MessagePageLoadState
     let hasNextPage: Bool
@@ -586,42 +579,10 @@ private struct ReadingCanvas: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let isShowingList = (pageLoadState == .loaded || pageLoadState == .idle) && !timelineItems.isEmpty
-        let isListInteractive = isShowingList && selectedMessage == nil
         ZStack {
-            // Keep a single persistent `MessageListView` (`NSTableView`) mounted across both detail
-            // inspection and category switches so macOS 12 never destroys its `NSHostingView` cell pool
-            // or cold-starts a new `NSTableView`. During Frame T0 `.loading`, the list is hidden (`opacity(0)`)
-            // and `ProgressView` is shown on top so old messages never linger on screen.
-            MessageListView(
-                timelineItems: timelineItems,
-                page: page,
-                unexpandedMessageCount: unexpandedMessageCount,
-                hasNextPage: hasNextPage,
-                scrollAnchorID: scrollAnchorID,
-                hasPendingLiveMessages: hasPendingLiveMessages,
-                isPresented: isListInteractive,
-                isNewMessage: isNewMessage,
-                clientToken: clientToken,
-                loadMore: loadMore,
-                loadNextPage: loadNextPage,
-                revealPendingLiveMessages: revealPendingLiveMessages,
-                setMessageVisibility: setMessageVisibility,
-                consumeScrollAnchor: consumeScrollAnchor,
-                markAllMessagesViewed: markAllMessagesViewed,
-                deleteMessage: deleteMessage,
-                requestBulkDelete: requestBulkDelete
-            ) { message in
-                markMessageViewed(message.id, message.sourceID)
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-                    selectedMessage = message
-                }
-            }
-            .opacity(isListInteractive ? 1 : 0)
-            .allowsHitTesting(isListInteractive)
-            .accessibilityHidden(!isListInteractive)
-
-            if selectedMessage == nil, !isShowingList {
+            // Keep the list mounted under the detail canvas. Returning therefore preserves the
+            // native List's scroll position and per-row image/timestamp lifetime.
+            Group {
                 switch pageLoadState {
                 case .loading:
                     ProgressView(Localized.string("inbox.loading"))
@@ -637,14 +598,46 @@ private struct ReadingCanvas: View {
                             .accessibilityIdentifier("retry-message-page-button")
                     }
                 case .idle, .loaded:
-                    EmptyStatePlaceholderView(
-                        title: Localized.string("inbox.empty.title"),
-                        systemImage: "bell.badge",
-                        description: Localized.string("inbox.empty.description")
-                    )
+                    if timelineItems.isEmpty {
+                        EmptyStatePlaceholderView(
+                            title: Localized.string("inbox.empty.title"),
+                            systemImage: "bell.badge",
+                            description: Localized.string("inbox.empty.description")
+                        )
+                    } else {
+                        MessageListView(
+                            timelineItems: timelineItems,
+                            page: page,
+                            unexpandedMessageCount: unexpandedMessageCount,
+                            hasNextPage: hasNextPage,
+                            scrollAnchorID: scrollAnchorID,
+                            hasPendingLiveMessages: hasPendingLiveMessages,
+                            isPresented: selectedMessage == nil,
+                            isNewMessage: isNewMessage,
+                            clientToken: clientToken,
+                            loadMore: loadMore,
+                            loadNextPage: loadNextPage,
+                            revealPendingLiveMessages: revealPendingLiveMessages,
+                            setMessageVisibility: setMessageVisibility,
+                            consumeScrollAnchor: consumeScrollAnchor,
+                            markAllMessagesViewed: markAllMessagesViewed,
+                            deleteMessage: deleteMessage,
+                            requestBulkDelete: requestBulkDelete
+                        ) { message in
+                            markMessageViewed(message.id, message.sourceID)
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                                selectedMessage = message
+                            }
+                        }
+                        // Only explicit source navigation starts another List lifetime. Pagination
+                        // keeps this page ID unchanged; the tail row itself never receives an ID.
+                        .id(page)
+                    }
                 }
             }
-
+            .opacity(selectedMessage == nil ? 1 : 0)
+            .allowsHitTesting(selectedMessage == nil)
+            .accessibilityHidden(selectedMessage != nil)
             if let selectedMessage {
                 MessageDetailView(
                     message: selectedMessage,
@@ -659,27 +652,17 @@ private struct ReadingCanvas: View {
             }
         }
         .navigationTitle(navigationTitle)
+        .onChange(of: sidebarReselectionVersion) { _ in
+            guard selectedMessage != nil else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                selectedMessage = nil
+            }
+        }
     }
-}
-
-/// Slot-indexed wrapper so `ForEach` keys rows by slot (`0..<20`) rather than message ID, allowing
-/// `ListCoreTableView` on macOS 12 to reuse `NSHostingView` instances in-place across category switches.
-private struct IndexedTimelineSlot: Identifiable {
-    let id: Int
-    let item: MessageTimelineItem
 }
 
 /// Uniform rows keep message density calm even when bodies vary substantially in length.
 private struct MessageListView: View {
-    /// Matches the uniform 3-line row height so `NSTableView` on macOS 12 uses an accurate estimated
-    /// row height (`~84pt` instead of AppKit's default `17pt`) and only instantiates the ~10 visible rows.
-    private static let estimatedRowHeight: CGFloat = 84
-    /// Bounds initial `ForEach` slots on category switch to 20 rows (nearly 2 full viewports) and keys
-    /// slots by `offset` (`0..<20`) so `ListCoreTableView` on macOS 12 reuses existing `NSHostingView`
-    /// cells in-place with zero row deletions or allocations. Additional cached rows expand on scroll.
-    private static let initialViewportBatchSize = 20
-    private static let scrollBatchIncrement = 25
-
     let timelineItems: [MessageTimelineItem]
     let page: MessagePage
     let unexpandedMessageCount: Int
@@ -700,18 +683,9 @@ private struct MessageListView: View {
     let selectMessage: (GotifyMessage) -> Void
     @Environment(\.locale) private var locale
     @State private var isTopBarHovered = false
-    @State private var displayLimit: Int = Self.initialViewportBatchSize
     @State private var listScrollTarget = MessageListScrollTarget()
 
-    private var visibleSlots: [IndexedTimelineSlot] {
-        let count = min(displayLimit, timelineItems.count)
-        return timelineItems.prefix(count).enumerated().map { index, item in
-            IndexedTimelineSlot(id: index, item: item)
-        }
-    }
-
     var body: some View {
-        let slots = visibleSlots
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
                 if unexpandedMessageCount > 0 || hasPendingLiveMessages {
@@ -720,74 +694,55 @@ private struct MessageListView: View {
                 }
 
                 List {
-                    ForEach(slots) { slot in
-                        slotRowView(for: slot)
+                    // `List` virtualizes rows. A gap loads only when it enters the visible range.
+                    ForEach(timelineItems) { item in
+                        MessageTimelineListRow(
+                            item: item,
+                            page: page,
+                            isNewMessage: isNewMessage,
+                            clientToken: clientToken,
+                            locale: locale,
+                            isPresented: isPresented,
+                            selectMessage: selectMessage,
+                            markAllMessagesViewed: markAllMessagesViewed,
+                            deleteMessage: deleteMessage,
+                            requestBulkDelete: requestBulkDelete,
+                            loadMore: loadMore,
+                            setMessageVisibility: setMessageVisibility
+                        )
                     }
                     // A fixed row container matches the reference timeline's footer structure.
                     // No explicit footer ID: appending history must not anchor scrolling to the footer.
                     ZStack {
-                        if hasNextPage && slots.count >= timelineItems.count {
+                        if hasNextPage {
                             NextMessagePageSentinel(isEnabled: isPresented, loadNextPage: loadNextPage)
-                                .id(page)
                         }
                     }
                     .compatibleHiddenListRowSeparator()
                 }
                 .listStyle(.inset)
                 .introspect(.list(style: .inset), on: .macOS(.v12, .v13, .v14, .v15, .v26)) { tableView in
-                    if tableView.rowHeight != Self.estimatedRowHeight {
-                        tableView.rowHeight = Self.estimatedRowHeight
-                    }
                     listScrollTarget.tableView = tableView
                 }
                 .accessibilityIdentifier("message-timeline-list")
-                .onChange(of: page) { _ in
-                    displayLimit = Self.initialViewportBatchSize
-                    listScrollTarget.scrollToTop()
-                }
                 // Live insertion anchors the previous top row so history does not jump;
                 // explicit top-bar reveal scrolls all the way to row 0 at the top of the feed.
                 .onChange(of: scrollAnchorID) { anchorID in
                     guard let anchorID else { return }
                     consumeScrollAnchor(anchorID)
                     if isPresented {
-                        handleScrollAnchor(anchorID, slots: slots, proxy: proxy)
+                        let firstMessageID: Int64? = {
+                            guard case let .message(first) = timelineItems.first else { return nil }
+                            return first.id
+                        }()
+                        if anchorID == firstMessageID {
+                            listScrollTarget.scrollToTop()
+                        } else {
+                            proxy.scrollTo("message-\(anchorID)", anchor: .top)
+                        }
                     }
                 }
             }
-        }
-    }
-
-    private func slotRowView(for slot: IndexedTimelineSlot) -> some View {
-        MessageTimelineListRow(
-            item: slot.item,
-            page: page,
-            isNewMessage: isNewMessage,
-            clientToken: clientToken,
-            locale: locale,
-            isPresented: isPresented,
-            selectMessage: selectMessage,
-            markAllMessagesViewed: markAllMessagesViewed,
-            deleteMessage: deleteMessage,
-            requestBulkDelete: requestBulkDelete,
-            loadMore: loadMore,
-            setMessageVisibility: setMessageVisibility
-        )
-        .onAppear {
-            if slot.id >= displayLimit - 4, displayLimit < timelineItems.count {
-                displayLimit = min(timelineItems.count, displayLimit + Self.scrollBatchIncrement)
-            }
-        }
-    }
-
-    private func handleScrollAnchor(_ anchorID: Int64, slots: [IndexedTimelineSlot], proxy: ScrollViewProxy) {
-        if case let .message(first) = timelineItems.first, anchorID == first.id {
-            listScrollTarget.scrollToTop()
-        } else if let anchorSlot = slots.first(where: {
-            guard case let .message(message) = $0.item else { return false }
-            return message.id == anchorID
-        }) {
-            proxy.scrollTo(anchorSlot.id, anchor: .top)
         }
     }
 
@@ -971,9 +926,6 @@ private struct MessageTimelineListRow: View {
                 }
                 .onAppear { setMessageVisibility(message.id, true) }
                 .onDisappear { setMessageVisibility(message.id, false) }
-                .onChange(of: message.id) { newID in
-                    setMessageVisibility(newID, true)
-                }
             case let .gap(gap):
                 NextMessagePageSentinel(
                     isEnabled: isPresented,
@@ -1024,16 +976,11 @@ private struct MessageListRow: View {
         .onHover { hovering in
             isRowHovered = hovering
         }
-        .onChange(of: message.id) { _ in
-            isRowHovered = false
-            isDeleteHovered = false
-        }
     }
 }
 
 /// Slightly larger native borderless delete icon that appears only when the row is hovered/active
-/// and highlights the symbol itself on hover. Avoiding an always-mounted `NSButton` and `.onHover`
-/// tracking area on unhovered rows dramatically reduces `NSTableView` mount work on macOS 12.
+/// and highlights the symbol itself on hover.
 private struct MessageDeleteButton: View {
     let messageID: Int64
     let isVisible: Bool
@@ -1041,26 +988,21 @@ private struct MessageDeleteButton: View {
     let action: () -> Void
 
     var body: some View {
-        if isVisible {
-            Button(role: .destructive, action: action) {
-                Image(systemName: "trash")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(isHovered ? Color.red : Color.secondary)
-                    .frame(width: 32, height: 32)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .onHover { hovering in
-                isHovered = hovering
-            }
-            .help(Localized.string("message.delete"))
-            .accessibilityLabel(Localized.string("message.delete"))
-            .accessibilityIdentifier("delete-message-button-\(messageID)")
-        } else {
-            Color.clear
+        Button(role: .destructive, action: action) {
+            Image(systemName: "trash")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(isHovered ? Color.red : Color.secondary)
                 .frame(width: 32, height: 32)
-                .accessibilityHidden(true)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.borderless)
+        .opacity(isVisible ? 1 : 0)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help(Localized.string("message.delete"))
+        .accessibilityLabel(Localized.string("message.delete"))
+        .accessibilityIdentifier("delete-message-button-\(messageID)")
     }
 }
 
@@ -1082,10 +1024,7 @@ private struct MessageRowContent: View, Equatable {
                         .font(isNew ? .headline.weight(.semibold) : .headline)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    Text(RelativeTimeLabel.relativeString(for: message.receivedAt, relativeTo: .now, locale: locale))
-                        .accessibilityLabel(
-                            RelativeTimeLabel.accessibilityString(for: message.receivedAt, relativeTo: .now, locale: locale)
-                        )
+                    RelativeTimeLabel(date: message.receivedAt)
                         .font(.caption)
                         .fixedSize(horizontal: true, vertical: false)
                 }
@@ -1116,27 +1055,22 @@ private struct GotifyApplicationIcon: View {
     var body: some View {
         let request = authenticatedRequest
         Group {
-            if let request {
-                if let cached = GotifyIconPipeline.pipeline.cache[request] {
-                    Image(nsImage: cached.image)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    LazyImage(request: request) { state in
-                        if let image = state.image {
-                            image.resizable().scaledToFill()
-                        } else if let cached = GotifyIconPipeline.pipeline.cache[request] {
-                            Image(nsImage: cached.image).resizable().scaledToFill()
-                        } else {
-                            Image(systemName: "app.fill").foregroundStyle(.secondary)
-                        }
-                    }
-                    .pipeline(GotifyIconPipeline.pipeline)
-                    .onDisappear(.lowerPriority)
-                }
+            if let request, let cached = GotifyIconPipeline.pipeline.cache[request] {
+                Image(nsImage: cached.image)
+                    .resizable()
+                    .scaledToFill()
             } else {
-                Image(systemName: "app.fill")
-                    .foregroundStyle(.secondary)
+                LazyImage(request: request) { state in
+                    if let image = state.image {
+                        image.resizable().scaledToFill()
+                    } else if let request, let cached = GotifyIconPipeline.pipeline.cache[request] {
+                        Image(nsImage: cached.image).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "app.fill").foregroundStyle(.secondary)
+                    }
+                }
+                .pipeline(GotifyIconPipeline.pipeline)
+                .onDisappear(.lowerPriority)
             }
         }
         .frame(width: size, height: size)

@@ -88,72 +88,13 @@ final class AppWindowCoordinator: NSObject {
             || window.title.contains("Preferences")
     }
 
-    private static let legacySidebarButtonIdentifier = NSUserInterfaceItemIdentifier("gotify-macos12-sidebar-toggle")
-
     private func configureCloseButton(for window: NSWindow) {
         if let closeButton = window.standardWindowButton(.closeButton) {
             if closeButton.target !== self || closeButton.action != #selector(handleCloseButton(_:)) {
                 closeButton.target = self
                 closeButton.action = #selector(handleCloseButton(_:))
             }
-            // On macOS 12 (`NavigationView`), SwiftUI places `ToolbarItem(placement: .navigation)` to the
-            // trailing side of the sidebar divider (next to the detail title). Mounting a native titlebar
-            // button next to the traffic lights keeps the sidebar toggle inside the left sidebar header (`x ≈ 80`),
-            // matching `NavigationSplitView` on macOS 13+.
-            if #unavailable(macOS 13.0),
-               let titlebarView = closeButton.superview,
-               let zoomButton = window.standardWindowButton(.zoomButton) {
-                let buttonFrame = NSRect(
-                    x: zoomButton.frame.maxX + 14,
-                    y: round(closeButton.frame.midY - 11),
-                    width: 28,
-                    height: 22
-                )
-                if let existing = titlebarView.subviews.first(where: { $0.identifier == Self.legacySidebarButtonIdentifier }) as? NSButton {
-                    if existing.frame != buttonFrame {
-                        existing.frame = buttonFrame
-                    }
-                } else {
-                    let button = NSButton(frame: buttonFrame)
-                    button.identifier = Self.legacySidebarButtonIdentifier
-                    button.bezelStyle = .texturedRounded
-                    button.isBordered = false
-                    button.image = NSImage(
-                        systemSymbolName: "sidebar.left",
-                        accessibilityDescription: Localized.string("sidebar.allMessages")
-                    )
-                    button.imagePosition = .imageOnly
-                    button.contentTintColor = .secondaryLabelColor
-                    button.toolTip = Localized.string("sidebar.allMessages")
-                    button.target = self
-                    button.action = #selector(handleToggleSidebar(_:))
-                    titlebarView.addSubview(button)
-                }
-            }
         }
-    }
-
-    @objc private func handleToggleSidebar(_ sender: Any?) {
-        guard let window = mainWindow ?? NSApp.keyWindow else { return }
-        if window.firstResponder?.tryToPerform(#selector(NSSplitViewController.toggleSidebar(_:)), with: sender) == true {
-            return
-        }
-        if let splitVC = Self.findSplitViewController(in: window.contentViewController) {
-            splitVC.toggleSidebar(sender)
-        }
-    }
-
-    private static func findSplitViewController(in root: NSViewController?) -> NSSplitViewController? {
-        guard let root else { return nil }
-        if let split = root as? NSSplitViewController {
-            return split
-        }
-        for child in root.children {
-            if let found = findSplitViewController(in: child) {
-                return found
-            }
-        }
-        return nil
     }
 
     private func attachMainWindowIfCandidate(_ window: NSWindow) {

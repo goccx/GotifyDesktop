@@ -189,27 +189,8 @@ final class MessageStore: ObservableObject {
         await pageStore.failGapLoad(request)
     }
 
-    private var pendingVisibilityUpdates: [MessagePage: [Int64: Bool]] = [:]
-    private var visibilityFlushTask: Task<Void, Never>?
-
     func setMessageVisibility(_ messageID: Int64, visible: Bool, for page: MessagePage) async {
         await pageStore.setMessageVisibility(messageID, visible: visible, for: page)
-    }
-
-    /// Coalesces synchronous SwiftUI `.onAppear` / `.onDisappear` bursts (up to 200 callbacks when
-    /// switching 100-row lists on macOS 12) into a single actor hop after the current frame commits.
-    func recordRowVisibility(_ messageID: Int64, visible: Bool, for page: MessagePage) {
-        pendingVisibilityUpdates[page, default: [:]][messageID] = visible
-        guard visibilityFlushTask == nil else { return }
-        visibilityFlushTask = Task { @MainActor [weak self] in
-            await Task.yield()
-            guard let self else { return }
-            let batch = self.pendingVisibilityUpdates
-            self.pendingVisibilityUpdates.removeAll(keepingCapacity: true)
-            self.visibilityFlushTask = nil
-            guard !batch.isEmpty else { return }
-            await self.pageStore.applyMessageVisibilityUpdates(batch)
-        }
     }
 
     func consumeScrollAnchor(_ anchorID: Int64, for page: MessagePage) async {
@@ -245,9 +226,6 @@ final class MessageStore: ObservableObject {
     func discardCurrentSession() async {
         sessionID = UUID()
         sessionVersion = sessionID
-        visibilityFlushTask?.cancel()
-        visibilityFlushTask = nil
-        pendingVisibilityUpdates.removeAll(keepingCapacity: true)
         await pageStore.discardSession(replacingSessionID: sessionID)
         snapshots.removeAll(keepingCapacity: true)
         applicationsByID.removeAll(keepingCapacity: true)
