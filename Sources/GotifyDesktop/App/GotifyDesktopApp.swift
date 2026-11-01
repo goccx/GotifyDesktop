@@ -4,16 +4,38 @@ import SwiftUI
 
 @MainActor
 final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
+    override init() {
+        super.init()
+        // Disable macOS window state restoration so `NSPersistentUIManager` never restores
+        // a "0 visible windows" snapshot after the main window was hidden with `orderOut(nil)`.
+        UserDefaults.standard.register(defaults: ["NSQuitAlwaysKeepsWindows": false])
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+        NSWindow.allowsAutomaticWindowTabbing = false
+        _ = AppWindowCoordinator.shared
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let bootstrap = GotifyAppBootstrap.shared
-        AppWindowCoordinator.shared.configure(
-            rootView: MainWindowRootView(preferences: bootstrap.preferences)
-                .environmentObject(bootstrap.messageStore)
-                .environmentObject(bootstrap.preferences)
-                .environmentObject(bootstrap.notificationPreferences)
-                .environmentObject(bootstrap.notificationCoordinator)
-                .environmentObject(bootstrap.serverPreferences)
-        )
+        NSApp.disableRelaunchOnLogin()
+        AppWindowCoordinator.shared.startObserving()
+        DispatchQueue.main.async {
+            AppWindowCoordinator.shared.ensureMainWindowPresentedAtLaunch()
+            NSAppleEventManager.shared().setEventHandler(
+                self,
+                andSelector: #selector(self.handleReopenAppleEvent(_:withReplyEvent:)),
+                forEventClass: AEEventClass(kCoreEventClass),
+                andEventID: AEEventID(kAEReopenApplication)
+            )
+        }
+    }
+
+    @objc private func handleReopenAppleEvent(
+        _ event: NSAppleEventDescriptor,
+        withReplyEvent replyEvent: NSAppleEventDescriptor
+    ) {
         AppWindowCoordinator.shared.openMainWindow()
     }
 
@@ -22,8 +44,19 @@ final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        AppWindowCoordinator.shared.openMainWindow()
-        return false
+        if AppWindowCoordinator.shared.hasMainWindow {
+            AppWindowCoordinator.shared.openMainWindow()
+            return false
+        }
+        return true
+    }
+
+    func application(_ app: NSApplication, shouldSaveApplicationState coder: NSCoder) -> Bool {
+        false
+    }
+
+    func application(_ app: NSApplication, shouldRestoreApplicationState coder: NSCoder) -> Bool {
+        false
     }
 }
 
@@ -31,9 +64,22 @@ final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct GotifyDesktopApp: App {
     @NSApplicationDelegateAdaptor(GotifyAppDelegate.self) private var appDelegate
-    @ObservedObject private var bootstrap = GotifyAppBootstrap.shared
+    @StateObject private var bootstrap = GotifyAppBootstrap()
 
     var body: some Scene {
+        WindowGroup(Localized.string("app.name")) {
+            InboxView()
+                .environmentObject(bootstrap.messageStore)
+                .environmentObject(bootstrap.preferences)
+                .environmentObject(bootstrap.notificationPreferences)
+                .environmentObject(bootstrap.notificationCoordinator)
+                .environmentObject(bootstrap.serverPreferences)
+                .environment(\.locale, bootstrap.preferences.language.locale)
+        }
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
+
         Settings {
             SettingsView()
                 .environmentObject(bootstrap.preferences)
@@ -42,16 +88,11 @@ struct GotifyDesktopApp: App {
                 .environmentObject(bootstrap.notificationCoordinator)
                 .environment(\.locale, bootstrap.preferences.language.locale)
         }
-        .commands {
-            CommandGroup(replacing: .newItem) {}
-        }
     }
 }
 
 @MainActor
 private final class GotifyAppBootstrap: ObservableObject {
-    static let shared = GotifyAppBootstrap()
-
     let messageStore: MessageStore
     let preferences: AppPreferences
     let notificationPreferences: NotificationPreferences
@@ -59,7 +100,7 @@ private final class GotifyAppBootstrap: ObservableObject {
     let serverPreferences: ServerPreferences
     let menuBarController: MenuBarStatusController
 
-    private init() {
+    init() {
         LegacyBundlePreferencesMigration.migrateIfNeeded()
         let store = Container.shared.messageStore()
         let preferences = AppPreferences()
@@ -69,6 +110,7 @@ private final class GotifyAppBootstrap: ObservableObject {
             sessionController: GotifySessionController(messageStore: store, notifier: notificationCoordinator)
         )
         let menuBarController = MenuBarStatusController()
+        menuBarController.configure(messageStore: store, preferences: preferences)
 
         self.messageStore = store
         self.preferences = preferences
@@ -77,20 +119,9 @@ private final class GotifyAppBootstrap: ObservableObject {
         self.serverPreferences = serverPreferences
         self.menuBarController = menuBarController
 
-        menuBarController.configure(messageStore: store, preferences: preferences)
-
         // This process-level task restores a verified opt-in even when the main window remains closed.
         Task { @MainActor in
             await serverPreferences.restoreReceivingSessionIfNeeded()
         }
-    }
-}
-
-private struct MainWindowRootView: View {
-    @ObservedObject var preferences: AppPreferences
-
-    var body: some View {
-        InboxView()
-            .environment(\.locale, preferences.language.locale)
     }
 }
