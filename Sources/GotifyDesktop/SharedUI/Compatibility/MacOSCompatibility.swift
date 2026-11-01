@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Unified macOS 12+ container and view helpers with zero OS-version availability branches,
-/// ensuring identical runtime behavior across macOS 12 through macOS 15+.
+/// Isolates macOS 12 vs macOS 13+ SwiftUI container and modifier differences in one adapter file
+/// so feature views remain free of availability branches while preserving 100% native behavior.
 struct SplitNavigationContainer<Sidebar: View, Detail: View>: View {
     private let sidebar: Sidebar
     private let detail: Detail
@@ -16,12 +16,34 @@ struct SplitNavigationContainer<Sidebar: View, Detail: View>: View {
     }
 
     var body: some View {
-        NavigationView {
-            sidebar
-                .frame(minWidth: 210, idealWidth: 232, maxWidth: 260)
-            detail
+        if #available(macOS 13.0, *) {
+            NavigationSplitView {
+                sidebar
+                    .navigationSplitViewColumnWidth(min: 210, ideal: 232, max: 260)
+            } detail: {
+                detail
+            }
+            .navigationSplitViewStyle(.balanced)
+        } else {
+            NavigationView {
+                sidebar
+                    .frame(minWidth: 210, idealWidth: 232, maxWidth: 260)
+                detail
+            }
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        NSApp.keyWindow?.firstResponder?.tryToPerform(
+                            #selector(NSSplitViewController.toggleSidebar(_:)),
+                            with: nil
+                        )
+                    } label: {
+                        Image(systemName: "sidebar.left")
+                    }
+                    .help(Localized.string("sidebar.allMessages"))
+                }
+            }
         }
-        .navigationViewStyle(DoubleColumnNavigationViewStyle())
     }
 }
 
@@ -33,11 +55,18 @@ struct CompatibleSettingsForm<Content: View>: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+        if #available(macOS 13.0, *) {
+            Form {
                 content
             }
-            .padding(20)
+            .formStyle(.grouped)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    content
+                }
+                .padding(20)
+            }
         }
     }
 }
@@ -63,24 +92,32 @@ struct CompatibleSettingsSection<Header: View, Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            header
-                .font(.headline)
-                .padding(.horizontal, 4)
-
-            VStack(alignment: .leading, spacing: 12) {
+        if #available(macOS 13.0, *) {
+            Section {
                 content
+            } header: {
+                header
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-            )
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                header
+                    .font(.headline)
+                    .padding(.horizontal, 4)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    content
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+            }
         }
     }
 }
@@ -95,21 +132,37 @@ struct CompatibleLabeledContent<Content: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text(title)
-            Spacer(minLength: 12)
-            content
+        if #available(macOS 13.0, *) {
+            LabeledContent(title) {
+                content
+            }
+        } else {
+            HStack(spacing: 12) {
+                Text(title)
+                Spacer(minLength: 12)
+                content
+            }
         }
     }
 }
 
 extension View {
+    @ViewBuilder
     func compatibleHiddenListRowSeparator() -> some View {
-        self
+        if #available(macOS 13.0, *) {
+            self.listRowSeparator(.hidden)
+        } else {
+            self
+        }
     }
 
+    @ViewBuilder
     func compatibleReservedTwoLineLimit() -> some View {
-        self.lineLimit(2)
-            .frame(minHeight: 34, alignment: .topLeading)
+        if #available(macOS 13.0, *) {
+            self.lineLimit(2, reservesSpace: true)
+        } else {
+            self.lineLimit(2)
+                .frame(minHeight: 34, alignment: .topLeading)
+        }
     }
 }

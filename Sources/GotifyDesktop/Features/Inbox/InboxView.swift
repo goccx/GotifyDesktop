@@ -86,18 +86,6 @@ struct InboxView: View {
                 selectedMessage: $selectedMessage
             )
             .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        NSApp.keyWindow?.firstResponder?.tryToPerform(
-                            #selector(NSSplitViewController.toggleSidebar(_:)),
-                            with: nil
-                        )
-                    } label: {
-                        Image(systemName: "sidebar.left")
-                    }
-                    .help(Localized.string("sidebar.allMessages"))
-                }
-
                 ToolbarItem(placement: .primaryAction) {
                     ConnectionStatusLabel(state: messageStore.connectionState, language: preferences.language)
                 }

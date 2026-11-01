@@ -95,6 +95,21 @@ final class AppWindowCoordinator: NSObject {
                 closeButton.action = #selector(handleCloseButton(_:))
             }
         }
+        // On macOS 12 (`NavigationView`), SwiftUI places `ToolbarItem(placement: .navigation)` at
+        // `separatorIndex + 1` (to the right of `NSTrackingSeparatorToolbarItem`, next to the detail title).
+        // Moving it to index 0 places the sidebar toggle button inside the left sidebar header (`relX ≈ 87`),
+        // matching `NavigationSplitView` on macOS 13+.
+        if #unavailable(macOS 13.0), let toolbar = window.toolbar {
+            let items = toolbar.items
+            if let separatorIndex = items.firstIndex(where: { $0 is NSTrackingSeparatorToolbarItem }),
+               separatorIndex + 1 < items.count {
+                let candidateID = items[separatorIndex + 1].itemIdentifier
+                if candidateID != .flexibleSpace && candidateID != .space {
+                    toolbar.removeItem(at: separatorIndex + 1)
+                    toolbar.insertItem(withItemIdentifier: candidateID, at: 0)
+                }
+            }
+        }
     }
 
     private func attachMainWindowIfCandidate(_ window: NSWindow) {
