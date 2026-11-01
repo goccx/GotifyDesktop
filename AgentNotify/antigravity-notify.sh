@@ -68,16 +68,17 @@ send_gotify() {
 
 # Note: Antigravity currently cannot gracefully determine from Hook stdin payloads whether an action
 # triggered an internal approval prompt. Therefore, this script uses a high-risk command interception
-# gate (`is_high_risk_command` -> returns `ask` and sends a Gotify notification) while routine commands
-# return `allow` (pair with default-allow / Turbo mode in Antigravity's external permission settings).
+# gate (`is_high_risk_command` -> returns `force_ask` and sends a Gotify notification) while routine commands
+# return `allow` (pair with default-allow / Always Proceed in Antigravity's external permission settings;
+# `force_ask` overrides cached "Always Allow" permissions so high-risk commands always pause for confirmation).
 # 说明：Antigravity 目前无法从 Hook 传递的 stdin 信息中优雅判断是否需要审批，因此这里采用高危命令拦截方案
-# 触发审批通知（返回 ask 要求确认并推送通知），常规命令默认放行（建议外部权限配置设为默认放行）。
+# 触发审批通知（返回 force_ask 忽略默认放行缓存、强制暂停等待手动确认并推送通知），常规命令默认放行。
 is_high_risk_command() {
     local normalized=" ${1//$'\n'/ } "
     case "$normalized" in
         *" sudo "*|*" rm -rf "*|*" rm -fr "*|*" mkfs"*|*" dd if="*|*" diskutil "*|\
         *" shutdown "*|*" reboot "*|*" killall "*|*" pkill "*|*" kill -9 "*|\
-        *" chmod -R 777 "*|*" git push"*|*" git reset --hard"*|*" git clean -f"*)
+        *" chmod -R 777 "*|*" git push -f"*|*" git push --force"*|*" git reset --hard"*|*" git clean -f"*)
             return 0
             ;;
         *)
@@ -129,7 +130,7 @@ if [[ -n "$tool_name" ]]; then
             log "INFO" "High-risk command intercepted: title=${title}, cmd=${cmd_line}"
             send_gotify || true
 
-            echo '{"decision": "ask", "reason": "High-risk command requires manual approval."}' >&3
+            echo '{"decision": "force_ask", "reason": "High-risk command requires manual approval."}' >&3
             exit 0
         fi
 
