@@ -662,11 +662,23 @@ private struct ReadingCanvas: View {
     }
 }
 
+/// Slot-indexed wrapper so `ForEach` keys rows by slot (`0..<20`) rather than message ID, allowing
+/// `ListCoreTableView` on macOS 12 to reuse `NSHostingView` instances in-place across category switches.
+private struct IndexedTimelineSlot: Identifiable {
+    let id: Int
+    let item: MessageTimelineItem
+}
+
 /// Uniform rows keep message density calm even when bodies vary substantially in length.
 private struct MessageListView: View {
     /// Matches the uniform 3-line row height so `NSTableView` on macOS 12 uses an accurate estimated
     /// row height (`~84pt` instead of AppKit's default `17pt`) and only instantiates the ~10 visible rows.
     private static let estimatedRowHeight: CGFloat = 84
+    /// Bounds initial `ForEach` slots on category switch to 20 rows (nearly 2 full viewports) and keys
+    /// slots by `offset` (`0..<20`) so `ListCoreTableView` on macOS 12 reuses existing `NSHostingView`
+    /// cells in-place with zero row deletions or allocations. Additional cached rows expand on scroll.
+    private static let initialViewportBatchSize = 20
+    private static let scrollBatchIncrement = 25
 
     let timelineItems: [MessageTimelineItem]
     let page: MessagePage
@@ -688,9 +700,18 @@ private struct MessageListView: View {
     let selectMessage: (GotifyMessage) -> Void
     @Environment(\.locale) private var locale
     @State private var isTopBarHovered = false
+    @State private var displayLimit: Int = Self.initialViewportBatchSize
     @State private var listScrollTarget = MessageListScrollTarget()
 
+    private var visibleSlots: [IndexedTimelineSlot] {
+        let count = min(displayLimit, timelineItems.count)
+        return timelineItems.prefix(count).enumerated().map { index, item in
+            IndexedTimelineSlot(id: index, item: item)
+        }
+    }
+
     var body: some View {
+        let slots = visibleSlots
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
                 if unexpandedMessageCount > 0 || hasPendingLiveMessages {
@@ -699,27 +720,13 @@ private struct MessageListView: View {
                 }
 
                 List {
-                    // `List` virtualizes rows. A gap loads only when it enters the visible range.
-                    ForEach(timelineItems) { item in
-                        MessageTimelineListRow(
-                            item: item,
-                            page: page,
-                            isNewMessage: isNewMessage,
-                            clientToken: clientToken,
-                            locale: locale,
-                            isPresented: isPresented,
-                            selectMessage: selectMessage,
-                            markAllMessagesViewed: markAllMessagesViewed,
-                            deleteMessage: deleteMessage,
-                            requestBulkDelete: requestBulkDelete,
-                            loadMore: loadMore,
-                            setMessageVisibility: setMessageVisibility
-                        )
+                    ForEach(slots) { slot in
+                        slotRowView(for: slot)
                     }
                     // A fixed row container matches the reference timeline's footer structure.
                     // No explicit footer ID: appending history must not anchor scrolling to the footer.
                     ZStack {
-                        if hasNextPage {
+                        if hasNextPage && slots.count >= timelineItems.count {
                             NextMessagePageSentinel(isEnabled: isPresented, loadNextPage: loadNextPage)
                                 .id(page)
                         }
@@ -735,6 +742,7 @@ private struct MessageListView: View {
                 }
                 .accessibilityIdentifier("message-timeline-list")
                 .onChange(of: page) { _ in
+                    displayLimit = Self.initialViewportBatchSize
                     listScrollTarget.scrollToTop()
                 }
                 // Live insertion anchors the previous top row so history does not jump;
@@ -743,18 +751,43 @@ private struct MessageListView: View {
                     guard let anchorID else { return }
                     consumeScrollAnchor(anchorID)
                     if isPresented {
-                        let firstMessageID: Int64? = {
-                            guard case let .message(first) = timelineItems.first else { return nil }
-                            return first.id
-                        }()
-                        if anchorID == firstMessageID {
-                            listScrollTarget.scrollToTop()
-                        } else {
-                            proxy.scrollTo("message-\(anchorID)", anchor: .top)
-                        }
+                        handleScrollAnchor(anchorID, slots: slots, proxy: proxy)
                     }
                 }
             }
+        }
+    }
+
+    private func slotRowView(for slot: IndexedTimelineSlot) -> some View {
+        MessageTimelineListRow(
+            item: slot.item,
+            page: page,
+            isNewMessage: isNewMessage,
+            clientToken: clientToken,
+            locale: locale,
+            isPresented: isPresented,
+            selectMessage: selectMessage,
+            markAllMessagesViewed: markAllMessagesViewed,
+            deleteMessage: deleteMessage,
+            requestBulkDelete: requestBulkDelete,
+            loadMore: loadMore,
+            setMessageVisibility: setMessageVisibility
+        )
+        .onAppear {
+            if slot.id >= displayLimit - 4, displayLimit < timelineItems.count {
+                displayLimit = min(timelineItems.count, displayLimit + Self.scrollBatchIncrement)
+            }
+        }
+    }
+
+    private func handleScrollAnchor(_ anchorID: Int64, slots: [IndexedTimelineSlot], proxy: ScrollViewProxy) {
+        if case let .message(first) = timelineItems.first, anchorID == first.id {
+            listScrollTarget.scrollToTop()
+        } else if let anchorSlot = slots.first(where: {
+            guard case let .message(message) = $0.item else { return false }
+            return message.id == anchorID
+        }) {
+            proxy.scrollTo(anchorSlot.id, anchor: .top)
         }
     }
 
@@ -938,6 +971,9 @@ private struct MessageTimelineListRow: View {
                 }
                 .onAppear { setMessageVisibility(message.id, true) }
                 .onDisappear { setMessageVisibility(message.id, false) }
+                .onChange(of: message.id) { newID in
+                    setMessageVisibility(newID, true)
+                }
             case let .gap(gap):
                 NextMessagePageSentinel(
                     isEnabled: isPresented,
@@ -987,6 +1023,10 @@ private struct MessageListRow: View {
         .contentShape(Rectangle())
         .onHover { hovering in
             isRowHovered = hovering
+        }
+        .onChange(of: message.id) { _ in
+            isRowHovered = false
+            isDeleteHovered = false
         }
     }
 }

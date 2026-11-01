@@ -30,19 +30,7 @@ struct SplitNavigationContainer<Sidebar: View, Detail: View>: View {
                     .frame(minWidth: 210, idealWidth: 232, maxWidth: 260)
                 detail
             }
-            .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        NSApp.keyWindow?.firstResponder?.tryToPerform(
-                            #selector(NSSplitViewController.toggleSidebar(_:)),
-                            with: nil
-                        )
-                    } label: {
-                        Image(systemName: "sidebar.left")
-                    }
-                    .help(Localized.string("sidebar.allMessages"))
-                }
-            }
+            .navigationViewStyle(DoubleColumnNavigationViewStyle())
         }
     }
 }

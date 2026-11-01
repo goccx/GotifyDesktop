@@ -58,7 +58,9 @@ final class GotifySessionController {
 
         do {
             try await connect(session)
-            await loadMessages(page: .all, client: try currentClient(for: session), requestID: initialRequestID)
+            let client = try currentClient(for: session)
+            await loadMessages(page: .all, client: client, requestID: initialRequestID)
+            warmLoadApplicationPages(for: session, client: client)
         } catch {
             // Initial validation must finish in a terminal state, never leave Settings at "connecting".
             guard isActive(session) else { throw error }
@@ -214,8 +216,10 @@ final class GotifySessionController {
             do {
                 try await self.connect(session)
                 guard self.isActive(session) else { return }
+                let client = try self.currentClient(for: session)
                 await self.messageStore.invalidate(self.visiblePage)
-                await self.loadMessages(page: self.visiblePage, client: try self.currentClient(for: session))
+                await self.loadMessages(page: self.visiblePage, client: client)
+                self.warmLoadApplicationPages(for: session, client: client)
             } catch {
                 guard self.isActive(session) else { return }
                 self.stream = nil
@@ -309,6 +313,21 @@ final class GotifySessionController {
             await messageStore.finishLoading(page, requestID: claimedID, result: result)
         } catch {
             await messageStore.failLoading(page, requestID: claimedID)
+        }
+    }
+
+    /// Preloads each source's first page in the background after the initial `.all` feed is ready so
+    /// clicking any sidebar application category hits in-memory cache immediately.
+    private func warmLoadApplicationPages(for session: ActiveSession, client: GeneratedGotifyRESTClient) {
+        let appIDs = applications.keys.sorted()
+        guard !appIDs.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            for appID in appIDs {
+                guard let self, self.isActive(session) else { return }
+                let page = MessagePage.application(appID)
+                guard self.messageStore.pageLoadState(for: page) == .idle else { continue }
+                await self.loadMessages(page: page, client: client)
+            }
         }
     }
 }

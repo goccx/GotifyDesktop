@@ -24,6 +24,9 @@ assemble_app_bundle() {
     strip -x "$app_path/Contents/MacOS/GotifyDesktop"
   fi
   cp "Resources/AppBundle/Info.plist" "$app_path/Contents/Info.plist"
+  local commit_short
+  commit_short="$(git rev-parse --short=7 HEAD 2>/dev/null || echo 'unknown')"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $commit_short" "$app_path/Contents/Info.plist"
 
   if [[ -d "Resources/AppBundle/Resources" ]]; then
     cp -R "Resources/AppBundle/Resources/." "$app_path/Contents/Resources/"
