@@ -10,7 +10,6 @@ final class AppWindowCoordinator: NSObject {
 
     private var mainWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
-    private var windowDiscoveryCancellable: AnyCancellable?
 
     override init() {
         super.init()
@@ -36,18 +35,23 @@ final class AppWindowCoordinator: NSObject {
                 guard let self,
                       let closingWindow = notification.object as? NSWindow
                 else { return }
-                if closingWindow === self.mainWindow {
-                    self.mainWindow = nil
+                DispatchQueue.main.async {
+                    self.updateActivationPolicy(ignoringClosingWindow: closingWindow)
                 }
             }
             .store(in: &cancellables)
 
-        windowDiscoveryCancellable = NotificationCenter.default.publisher(for: NSWindow.didUpdateNotification)
+        NotificationCenter.default.publisher(for: NSWindow.didUpdateNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
-                guard let self, self.mainWindow == nil, let window = notification.object as? NSWindow else { return }
-                self.attachMainWindowIfCandidate(window)
+                guard let self, let window = notification.object as? NSWindow else { return }
+                if self.mainWindow == nil {
+                    self.attachMainWindowIfCandidate(window)
+                } else if window === self.mainWindow {
+                    self.configureCloseButton(for: window)
+                }
             }
+            .store(in: &cancellables)
     }
 
     var hasMainWindow: Bool {
@@ -71,9 +75,13 @@ final class AppWindowCoordinator: NSObject {
     }
 
     private func isSettingsWindow(_ window: NSWindow) -> Bool {
-        if let id = window.identifier?.rawValue,
-           id == "com_apple_SwiftUI_Settings_window" || id.contains("Settings_window") {
-            return true
+        if let id = window.identifier?.rawValue {
+            if id.contains("AppWindow") {
+                return false
+            }
+            if id == "com_apple_SwiftUI_Settings_window" || id.contains("Settings_window") {
+                return true
+            }
         }
         return window.title.contains("设置")
             || window.title.contains("Settings")
@@ -82,8 +90,10 @@ final class AppWindowCoordinator: NSObject {
 
     private func configureCloseButton(for window: NSWindow) {
         if let closeButton = window.standardWindowButton(.closeButton) {
-            closeButton.target = self
-            closeButton.action = #selector(handleCloseButton(_:))
+            if closeButton.target !== self || closeButton.action != #selector(handleCloseButton(_:)) {
+                closeButton.target = self
+                closeButton.action = #selector(handleCloseButton(_:))
+            }
         }
     }
 
@@ -110,7 +120,6 @@ final class AppWindowCoordinator: NSObject {
         }
 
         mainWindow = window
-        windowDiscoveryCancellable = nil
         window.isRestorable = false
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 900, height: 600)
@@ -123,9 +132,31 @@ final class AppWindowCoordinator: NSObject {
 
     @objc private func handleCloseButton(_ sender: Any?) {
         mainWindow?.orderOut(nil)
+        updateActivationPolicy(ignoringClosingWindow: nil)
+    }
+
+    private func updateActivationPolicy(ignoringClosingWindow: NSWindow?) {
+        let hasVisibleAppWindow = (NSApp?.windows ?? []).contains { window in
+            guard window !== ignoringClosingWindow,
+                  window.canBecomeMain,
+                  !window.className.contains("StatusBar")
+            else { return false }
+            return window.isVisible || window.isMiniaturized
+        }
+        if !hasVisibleAppWindow, NSApp.activationPolicy() != .accessory {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    private func ensureRegularActivationPolicy() {
+        if NSApp.activationPolicy() != .regular {
+            NSApp.setActivationPolicy(.regular)
+        }
     }
 
     func openMainWindow() {
+        let neededPolicySwitch = NSApp.activationPolicy() != .regular
+        ensureRegularActivationPolicy()
         if let mainWindow {
             configureCloseButton(for: mainWindow)
             if mainWindow.isMiniaturized {
@@ -133,6 +164,13 @@ final class AppWindowCoordinator: NSObject {
             }
             mainWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            if neededPolicySwitch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let mainWindow = self?.mainWindow else { return }
+                    mainWindow.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
             return
         }
         if let candidate = NSApp.windows.first(where: { $0.canBecomeMain && !$0.className.contains("StatusBar") && !isSettingsWindow($0) }) {
@@ -142,15 +180,20 @@ final class AppWindowCoordinator: NSObject {
             }
             candidate.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            if neededPolicySwitch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let mainWindow = self?.mainWindow else { return }
+                    mainWindow.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
             return
         }
-        _ = NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
-        startObserving()
-        mainWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func openSettingsWindow() {
+        ensureRegularActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
         if let appMenu = NSApp.mainMenu?.items.first?.submenu,
            let index = appMenu.items.firstIndex(where: { $0.keyEquivalent == "," }) {

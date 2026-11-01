@@ -137,16 +137,23 @@ private struct RelativeTimeTimelineSchedule: TimelineSchedule {
     }
 }
 
-/// Caches `RelativeDateTimeFormatter` instances per locale and unit style so list row rendering
-/// does not allocate new ICU formatters on every SwiftUI body evaluation.
+/// Caches `RelativeDateTimeFormatter` instances and bucketed relative strings per locale and unit style
+/// so list row rendering does not allocate or invoke ICU formatters repeatedly on every SwiftUI body pass.
 private enum RelativeDateTimeFormatterCache {
-    private struct Key: Hashable {
+    private struct FormatterKey: Hashable {
+        let localeIdentifier: String
+        let unitsStyleRawValue: Int
+    }
+
+    private struct StringCacheKey: Hashable {
+        let deltaBucket: Int64
         let localeIdentifier: String
         let unitsStyleRawValue: Int
     }
 
     private static let lock = NSLock()
-    private static var formatters: [Key: RelativeDateTimeFormatter] = [:]
+    private static var formatters: [FormatterKey: RelativeDateTimeFormatter] = [:]
+    private static var cachedStrings: [StringCacheKey: String] = [:]
 
     static func string(
         for date: Date,
@@ -157,7 +164,29 @@ private enum RelativeDateTimeFormatterCache {
         lock.lock()
         defer { lock.unlock() }
 
-        let key = Key(localeIdentifier: locale.identifier, unitsStyleRawValue: unitsStyle.rawValue)
+        let delta = date.timeIntervalSince(referenceDate)
+        let absDelta = abs(delta)
+        let sign: Int64 = delta < 0 ? -1 : 1
+        let bucketMagnitude: Int64 = switch absDelta {
+        case ..<60:
+            Int64(absDelta.rounded(.towardZero))
+        case ..<3_600:
+            60 + Int64((absDelta / 60).rounded(.towardZero))
+        case ..<86_400:
+            3_660 + Int64((absDelta / 3_600).rounded(.towardZero))
+        default:
+            100_000 + Int64((absDelta / 86_400).rounded(.towardZero))
+        }
+        let cacheKey = StringCacheKey(
+            deltaBucket: sign * bucketMagnitude,
+            localeIdentifier: locale.identifier,
+            unitsStyleRawValue: unitsStyle.rawValue
+        )
+        if let cached = cachedStrings[cacheKey] {
+            return cached
+        }
+
+        let key = FormatterKey(localeIdentifier: locale.identifier, unitsStyleRawValue: unitsStyle.rawValue)
         let formatter: RelativeDateTimeFormatter
         if let existing = formatters[key] {
             formatter = existing
@@ -168,6 +197,11 @@ private enum RelativeDateTimeFormatterCache {
             formatters[key] = created
             formatter = created
         }
-        return formatter.localizedString(for: date, relativeTo: referenceDate)
+        let result = formatter.localizedString(for: date, relativeTo: referenceDate)
+        if cachedStrings.count >= 1_024 {
+            cachedStrings.removeAll(keepingCapacity: true)
+        }
+        cachedStrings[cacheKey] = result
+        return result
     }
 }

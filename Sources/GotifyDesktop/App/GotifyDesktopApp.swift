@@ -33,9 +33,24 @@ final class GotifyAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.disableRelaunchOnLogin()
         AppWindowCoordinator.shared.startObserving()
+        // Register after SwiftUI.AppDelegate finishes its own launch setup so Dock click / `open -a`
+        // (`kAEReopenApplication`) always routes through our single-window coordinator on macOS 12+.
         DispatchQueue.main.async {
             AppWindowCoordinator.shared.ensureMainWindowPresentedAtLaunch()
+            NSAppleEventManager.shared().setEventHandler(
+                self,
+                andSelector: #selector(self.handleReopenAppleEvent(_:withReplyEvent:)),
+                forEventClass: AEEventClass(kCoreEventClass),
+                andEventID: AEEventID(kAEReopenApplication)
+            )
         }
+    }
+
+    @objc private func handleReopenAppleEvent(
+        _ event: NSAppleEventDescriptor,
+        withReplyEvent replyEvent: NSAppleEventDescriptor
+    ) {
+        AppWindowCoordinator.shared.openMainWindow()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -84,6 +99,9 @@ struct GotifyDesktopApp: App {
                 .environmentObject(bootstrap.notificationCoordinator)
                 .environmentObject(bootstrap.serverPreferences)
                 .environment(\.locale, bootstrap.preferences.language.locale)
+        }
+        .commands {
+            CommandGroup(replacing: .newItem) {}
         }
 
         Settings {

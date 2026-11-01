@@ -12,7 +12,6 @@ struct InboxView: View {
     @EnvironmentObject private var notificationCoordinator: GotifyNotificationCoordinator
     @State private var selection: SidebarSelection? = .allMessages
     @State private var readyPage: MessagePage = .all
-    @State private var transitionID = UUID()
     @State private var pageSwitchTask: Task<Void, Never>?
     @State private var pendingSingleDeleteMessage: GotifyMessage?
     @State private var pendingBulkDeletePage: MessagePage?
@@ -22,11 +21,12 @@ struct InboxView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // `page` always follows `selectedPage` at T0 so the sidebar selection highlight commits on
-        // Frame T0 without waiting for `NSTableView` (`List.id(page)`) construction.
-        let page = selectedPage
-        let pageItems = messageStore.timelineItems(for: page)
-        let isTransitioning = readyPage != page && !pageItems.isEmpty
+        // `targetPage` updates the sidebar selection highlight and toolbar title on Frame T0,
+        // while `displayPage` defers swapping a populated `MessageListView` to Frame T1 without
+        // unmounting the table into an artificial loading spinner.
+        let targetPage = selectedPage
+        let displayPage = messageStore.timelineItems(for: targetPage).isEmpty ? targetPage : readyPage
+        let pageItems = messageStore.timelineItems(for: displayPage)
         SplitNavigationContainer {
             SidebarView(
                 selection: $selection,
@@ -40,35 +40,35 @@ struct InboxView: View {
                         selectedMessage = nil
                     }
                 },
-                markAllMessagesViewed: { targetPage in
-                    messageStore.markAllMessagesViewed(for: targetPage)
+                markAllMessagesViewed: { pageToMark in
+                    messageStore.markAllMessagesViewed(for: pageToMark)
                 },
-                requestBulkDelete: { targetPage in
-                    pendingBulkDeletePage = targetPage
+                requestBulkDelete: { pageToDelete in
+                    pendingBulkDeletePage = pageToDelete
                 }
             )
         } detail: {
             ReadingCanvas(
-                timelineItems: isTransitioning ? [] : pageItems,
-                page: page,
+                timelineItems: pageItems,
+                page: displayPage,
                 navigationTitle: navigationTitle,
-                pageLoadState: isTransitioning ? .loading(transitionID) : messageStore.pageLoadState(for: page),
-                hasNextPage: !isTransitioning && messageStore.hasNextPage(for: page),
-                scrollAnchorID: messageStore.scrollAnchorID(for: page),
-                hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: page),
-                unexpandedMessageCount: messageStore.unexpandedMessageCount(for: page),
+                pageLoadState: messageStore.pageLoadState(for: displayPage),
+                hasNextPage: messageStore.hasNextPage(for: displayPage),
+                scrollAnchorID: messageStore.scrollAnchorID(for: displayPage),
+                hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: displayPage),
+                unexpandedMessageCount: messageStore.unexpandedMessageCount(for: displayPage),
                 isNewMessage: { messageStore.isNewMessage($0.id, sourceID: $0.sourceID) },
                 clientToken: serverPreferences.clientToken,
                 markMessageViewed: messageStore.markMessageViewed,
-                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: page) },
+                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: displayPage) },
                 retryLoading: loadSelectedPage,
-                loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: page.sourceID, gapID: gapID) },
-                loadNextPage: { try await serverPreferences.loadNextPage(for: page.sourceID) },
-                revealPendingLiveMessages: { await messageStore.revealPendingLiveMessages(for: page) },
-                setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: page) },
-                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: page) },
+                loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: displayPage.sourceID, gapID: gapID) },
+                loadNextPage: { try await serverPreferences.loadNextPage(for: displayPage.sourceID) },
+                revealPendingLiveMessages: { await messageStore.revealPendingLiveMessages(for: displayPage) },
+                setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: displayPage) },
+                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: displayPage) },
                 deleteMessage: { message in pendingSingleDeleteMessage = message },
-                requestBulkDelete: { pendingBulkDeletePage = page },
+                requestBulkDelete: { pendingBulkDeletePage = displayPage },
                 selectedMessage: $selectedMessage
             )
             .toolbar {
@@ -201,11 +201,9 @@ struct InboxView: View {
             return
         }
 
-        // Frame T0 renders `.loading(transitionID)` with `timelineItems: []` synchronously via
-        // `isTransitioning` and commits at the end of the current main RunLoop turn. Resuming on
-        // the next main-queue turn mounts the target list on Frame T1 without relying on
-        // `CATransaction.setCompletionBlock` (which SwiftUI overwrites during T0 or leaves idle on macOS 12).
-        transitionID = UUID()
+        // Frame T0 commits the sidebar selection highlight and window title immediately while keeping
+        // the current list mounted; Frame T1 swaps `readyPage` directly to `targetPage` without
+        // flashing a loading indicator for already-loaded timelines.
         pageSwitchTask = Task { @MainActor in
             await Self.waitForNextRunLoopTurn()
             guard !Task.isCancelled else { return }
@@ -977,7 +975,8 @@ private struct MessageListRow: View {
 }
 
 /// Slightly larger native borderless delete icon that appears only when the row is hovered/active
-/// and highlights the symbol itself on hover.
+/// and highlights the symbol itself on hover. Avoiding an always-mounted `NSButton` and `.onHover`
+/// tracking area on unhovered rows dramatically reduces `NSTableView` mount work on macOS 12.
 private struct MessageDeleteButton: View {
     let messageID: Int64
     let isVisible: Bool
@@ -985,21 +984,26 @@ private struct MessageDeleteButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(role: .destructive, action: action) {
-            Image(systemName: "trash")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(isHovered ? Color.red : Color.secondary)
+        if isVisible {
+            Button(role: .destructive, action: action) {
+                Image(systemName: "trash")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(isHovered ? Color.red : Color.secondary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .onHover { hovering in
+                isHovered = hovering
+            }
+            .help(Localized.string("message.delete"))
+            .accessibilityLabel(Localized.string("message.delete"))
+            .accessibilityIdentifier("delete-message-button-\(messageID)")
+        } else {
+            Color.clear
                 .frame(width: 32, height: 32)
-                .contentShape(Rectangle())
+                .accessibilityHidden(true)
         }
-        .buttonStyle(.borderless)
-        .opacity(isVisible ? 1 : 0)
-        .onHover { hovering in
-            isHovered = hovering
-        }
-        .help(Localized.string("message.delete"))
-        .accessibilityLabel(Localized.string("message.delete"))
-        .accessibilityIdentifier("delete-message-button-\(messageID)")
     }
 }
 
