@@ -70,7 +70,14 @@ input_json="${!#}"
 cwd="$(echo "$input_json" | jq -r '.cwd // empty')"
 project_name="${cwd:+$(basename "$cwd")}"
 title="${project_name:+[$project_name] }Task Completed"
-message="$(echo "$input_json" | jq -r '.["last-assistant-message"] // "Task finished."')"
+body="$(echo "$input_json" | jq -r '.["last-assistant-message"] // "Task finished."')"
+user_prompt="$(echo "$input_json" | jq -r '(.["input-messages"] | if type == "array" and length > 0 then last else empty end) // empty')"
+
+if [[ -n "$user_prompt" ]]; then
+    message="${body}"$'\n\n'"---"$'\n'"**Prompt:** ${user_prompt}"
+else
+    message="${body}"
+fi
 
 log "INFO" "Sending Codex notification: title=${title}"
 send_gotify || true

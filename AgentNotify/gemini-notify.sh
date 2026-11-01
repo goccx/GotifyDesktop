@@ -68,10 +68,11 @@ send_gotify() {
 
 input_json="$(cat)"
 
-# Gemini CLI Hook fields / 事件字段: hook_event_name, cwd, prompt_response, message
+# Gemini CLI Hook fields / 事件字段: hook_event_name, cwd, prompt, prompt_response, message
 event_name="$(echo "$input_json" | jq -r '.hook_event_name // "AfterAgent"')"
 cwd="$(echo "$input_json" | jq -r '.cwd // empty')"
 project_name="${cwd:+$(basename "$cwd")}"
+user_prompt="$(echo "$input_json" | jq -r '.prompt // empty')"
 
 if [[ "$event_name" == "Notification" ]]; then
     notification_type="$(echo "$input_json" | jq -r '.notification_type // empty')"
@@ -81,10 +82,16 @@ if [[ "$event_name" == "Notification" ]]; then
         exit 0
     fi
     title="${project_name:+[$project_name] }Approval Required"
-    message="$(echo "$input_json" | jq -r '.message // "Waiting for your approval or input."')"
+    body="$(echo "$input_json" | jq -r '.message // "Waiting for your approval or input."')"
 else
     title="${project_name:+[$project_name] }Task Completed"
-    message="$(echo "$input_json" | jq -r '.prompt_response // .message // "Task finished."')"
+    body="$(echo "$input_json" | jq -r '.prompt_response // .message // "Task finished."')"
+fi
+
+if [[ -n "$user_prompt" ]]; then
+    message="${body}"$'\n\n'"---"$'\n'"**Prompt:** ${user_prompt}"
+else
+    message="${body}"
 fi
 
 log "INFO" "Sending Gemini CLI notification: title=${title}"

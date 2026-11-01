@@ -121,9 +121,9 @@ if [[ -n "$tool_name" ]]; then
         cmd_line="$(echo "$input_json" | jq -r '.toolCall.args.CommandLine // empty')"
         if [[ -n "$cmd_line" ]] && is_high_risk_command "$cmd_line"; then
             title="${project_name:+[$project_name] }Approval Required: run_command"
-            message="Command: ${cmd_line}"
+            message="**Command:** \`${cmd_line}\`"
             if [[ -n "$user_input" ]]; then
-                message="${message}"$'\n\n'"---"$'\n'"Prompt: ${user_input}"
+                message="${message}"$'\n\n'"---"$'\n'"**Prompt:** ${user_input}"
             fi
 
             log "INFO" "High-risk command intercepted: title=${title}, cmd=${cmd_line}"
@@ -140,7 +140,7 @@ if [[ -n "$tool_name" ]]; then
     if [[ "$tool_name" == "ask_question" || "$tool_name" == "ask_permission" || "$tool_name" == "ask_custom_permission" ]]; then
         tool_detail="$(echo "$input_json" | jq -r '
             .toolCall.args
-            | if .questions then "Question: " + (.questions[0].question // (tojson))
+            | if .questions then "**Question:** " + (.questions[0].question // (tojson))
               else (tojson)
               end
         ' 2>/dev/null || true)"
@@ -148,7 +148,7 @@ if [[ -n "$tool_name" ]]; then
         title="${project_name:+[$project_name] }Approval Required: ${tool_name}"
         message="${tool_detail:-Tool: ${tool_name}}"
         if [[ -n "$user_input" ]]; then
-            message="${message}"$'\n\n'"---"$'\n'"Prompt: ${user_input}"
+            message="${message}"$'\n\n'"---"$'\n'"**Prompt:** ${user_input}"
         fi
 
         log "INFO" "Sending Antigravity interactive prompt notification: title=${title}"
@@ -184,7 +184,7 @@ if [[ "$reason" == "ERROR" || -n "$error_msg" ]]; then
     title="${project_name:+[$project_name] }Task Error"
     body="${error_msg:-Status: ${reason}}"
     if [[ -n "$assistant_reply" ]]; then
-        body="${assistant_reply}"$'\n\n'"Error: ${body}"
+        body="${assistant_reply}"$'\n\n'"**Error:** ${body}"
     fi
 elif [[ "$reason" == "TERMINAL_STEP_TYPE" ]]; then
     title="${project_name:+[$project_name] }Approval Required"
@@ -195,11 +195,11 @@ else
 fi
 
 if [[ -n "$body" && -n "$user_input" ]]; then
-    message="${body}"$'\n\n'"---"$'\n'"Prompt: ${user_input}"
+    message="${body}"$'\n\n'"---"$'\n'"**Prompt:** ${user_input}"
 elif [[ -n "$body" ]]; then
     message="${body}"
 else
-    message="Prompt: ${user_input:--}"
+    message="**Prompt:** ${user_input:--}"
 fi
 
 log "INFO" "Sending Antigravity notification: title=${title} (reason=${reason})"
