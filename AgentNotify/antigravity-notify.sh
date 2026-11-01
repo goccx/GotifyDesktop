@@ -78,7 +78,7 @@ is_high_risk_command() {
     case "$normalized" in
         *" sudo "*|*" rm -rf "*|*" rm -fr "*|*" mkfs"*|*" dd if="*|*" diskutil "*|\
         *" shutdown "*|*" reboot "*|*" killall "*|*" pkill "*|*" kill -9 "*|\
-        *" chmod -R 777 "*|*" git push -f"*|*" git push --force"*|*" git reset --hard"*|*" git clean -f"*)
+        *" chmod -R 777 "*|*" git push"*|*" git reset --hard"*|*" git clean -f"*)
             return 0
             ;;
         *)
