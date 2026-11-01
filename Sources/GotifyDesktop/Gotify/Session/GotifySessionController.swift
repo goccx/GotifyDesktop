@@ -300,15 +300,21 @@ final class GotifySessionController {
         if let requestID { claimedID = requestID } else { claimedID = await messageStore.beginLoading(page) }
         guard let claimedID else { return }
         do {
+            try Task.checkCancellation()
             let result = try await client.fetchMessages(
                 page: page,
                 limit: Configuration.pageLimit,
                 since: nil,
                 applications: applications
             )
+            try Task.checkCancellation()
             await messageStore.finishLoading(page, requestID: claimedID, result: result)
         } catch {
-            await messageStore.failLoading(page, requestID: claimedID)
+            if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+                await messageStore.cancelLoading(page, requestID: claimedID)
+            } else {
+                await messageStore.failLoading(page, requestID: claimedID)
+            }
         }
     }
 }

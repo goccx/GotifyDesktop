@@ -139,6 +139,13 @@ actor GotifyMessagePageStore {
         return true
     }
 
+    func cancelInitialLoad(for page: MessagePage, requestID: UUID) -> Bool {
+        guard var state = timelines[page], state.loadState == .loading(requestID) else { return false }
+        state.loadState = .idle
+        timelines[page] = state
+        return true
+    }
+
     /// Claims the independent tail cursor used by the automatic list sentinel.
     func beginNextPageLoad(for page: MessagePage, sessionID expectedSessionID: UUID) -> MessageHistoryRequest? {
         guard expectedSessionID == sessionID else { return nil }
@@ -229,6 +236,13 @@ actor GotifyMessagePageStore {
         state.visibleMessageIDs.removeAll { $0 == messageID }
         if visible { state.visibleMessageIDs.insert(messageID, at: 0) }
         timelines[page] = state
+    }
+
+    /// Applies a coalesced sequence of row appearance/disappearance callbacks in exact arrival order.
+    func setMessageVisibilities(_ events: [(page: MessagePage, messageID: Int64, visible: Bool)]) {
+        for event in events {
+            setMessageVisibility(event.messageID, visible: event.visible, for: event.page)
+        }
     }
 
     func consumeScrollAnchor(_ anchorID: Int64, for page: MessagePage) -> Bool {

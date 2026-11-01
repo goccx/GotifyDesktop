@@ -19,13 +19,21 @@ struct RelativeTimeLabel: View {
     }
 
     /// Foundation owns pluralization, locale grammar, future dates, and calendar-boundary behavior.
-    private func relativeText(referenceDate: Date) -> String {
+    static func relativeString(for date: Date, relativeTo referenceDate: Date, locale: Locale) -> String {
         RelativeDateTimeFormatterCache.string(for: date, relativeTo: referenceDate, locale: locale, unitsStyle: .abbreviated)
     }
 
     /// VoiceOver receives an unabridged version instead of reading a compact unit ambiguously.
-    private func accessibilityText(referenceDate: Date) -> String {
+    static func accessibilityString(for date: Date, relativeTo referenceDate: Date, locale: Locale) -> String {
         RelativeDateTimeFormatterCache.string(for: date, relativeTo: referenceDate, locale: locale, unitsStyle: .full)
+    }
+
+    private func relativeText(referenceDate: Date) -> String {
+        Self.relativeString(for: date, relativeTo: referenceDate, locale: locale)
+    }
+
+    private func accessibilityText(referenceDate: Date) -> String {
+        Self.accessibilityString(for: date, relativeTo: referenceDate, locale: locale)
     }
 
     /// The compact label keeps the list calm; the standard macOS hover affordance exposes the exact time.

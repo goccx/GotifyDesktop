@@ -24,11 +24,21 @@ struct InboxView: View {
 
     var body: some View {
         // `page` always follows `selectedPage` at T0 so the previous page's messages can never
-        // linger on screen. When switching to a non-empty page, `isTransitioning` is synchronously
-        // true on Frame T0, presenting `.loading` immediately until the T0 frame commits.
+        // linger on screen. `isTransitioning` is synchronously true on Frame T0, presenting
+        // `.loading` immediately until Frame T0 commits on the main RunLoop.
         let page = selectedPage
         let pageItems = messageStore.timelineItems(for: page)
-        let isTransitioning = readyPage != page && !pageItems.isEmpty
+        let storeLoadState = messageStore.pageLoadState(for: page)
+        let isTransitioning = readyPage != page
+        let effectiveLoadState: MessagePageLoadState = {
+            if isTransitioning {
+                return .loading(transitionID)
+            }
+            if storeLoadState == .idle, pageItems.isEmpty, messageStore.connectionState == .connected {
+                return .loading(transitionID)
+            }
+            return storeLoadState
+        }()
         SplitNavigationContainer {
             SidebarView(
                 selection: $selection,
@@ -52,7 +62,7 @@ struct InboxView: View {
                 page: page,
                 sidebarReselectionVersion: sidebarReselectionVersion,
                 navigationTitle: navigationTitle,
-                pageLoadState: isTransitioning ? .loading(transitionID) : messageStore.pageLoadState(for: page),
+                pageLoadState: effectiveLoadState,
                 hasNextPage: !isTransitioning && messageStore.hasNextPage(for: page),
                 scrollAnchorID: messageStore.scrollAnchorID(for: page),
                 hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: page),
@@ -184,37 +194,25 @@ struct InboxView: View {
     private func schedulePageSwitch(to targetPage: MessagePage) {
         pageSwitchTask?.cancel()
         let sourceID = targetPage.sourceID
-        let hasMessages = !messageStore.timelineItems(for: targetPage).isEmpty
 
-        if !hasMessages {
-            readyPage = targetPage
-            Task { await serverPreferences.loadMessages(for: sourceID) }
-            return
-        }
-
-        // Frame T0 is already rendering `.loading(transitionID)` with `timelineItems: []`
-        // synchronously via `isTransitioning`. Wait for T0 to commit to WindowServer, then
-        // mark `readyPage = targetPage` so Frame T1 mounts the target message list.
+        // Frame T0 renders `.loading(transitionID)` with `timelineItems: []` synchronously via
+        // `isTransitioning` and commits at the end of the current main RunLoop turn. Resuming on
+        // the next main-queue turn mounts the target list on Frame T1 without relying on
+        // `CATransaction.setCompletionBlock` (which SwiftUI/AppKit overwrites on macOS 12).
         transitionID = UUID()
         pageSwitchTask = Task { @MainActor in
-            await Self.waitForCurrentFrameCommit()
+            await Self.waitForNextRunLoopTurn()
             guard !Task.isCancelled else { return }
             readyPage = targetPage
             await serverPreferences.loadMessages(for: sourceID)
         }
     }
 
-    /// Bridges CoreAnimation's transaction commit callback into structured concurrency (zero sleep).
-    /// Resumes on the next main-queue turn strictly after the current T0 frame has committed.
     @MainActor
-    private static func waitForCurrentFrameCommit() async {
+    private static func waitForNextRunLoopTurn() async {
         await withCheckedContinuation { continuation in
-            let existingBlock = CATransaction.completionBlock()
-            CATransaction.setCompletionBlock {
-                existingBlock?()
-                DispatchQueue.main.async {
-                    continuation.resume()
-                }
+            DispatchQueue.main.async {
+                continuation.resume()
             }
         }
     }
@@ -248,8 +246,9 @@ struct InboxView: View {
     }
 
     /// The actor uses this transient signal only to protect the reading anchor during reclamation.
+    /// Coalesced on `@MainActor` in arrival order so unmounting/mounting 100 rows does not spawn 200 Tasks.
     private func setMessageVisibility(_ messageID: Int64, _ visible: Bool, for page: MessagePage) {
-        Task { await messageStore.setMessageVisibility(messageID, visible: visible, for: page) }
+        messageStore.recordRowVisibility(messageID, visible: visible, for: page)
     }
 
     private func consumeScrollAnchor(_ anchorID: Int64, for page: MessagePage) {
@@ -980,7 +979,8 @@ private struct MessageListRow: View {
 }
 
 /// Slightly larger native borderless delete icon that appears only when the row is hovered/active
-/// and highlights the symbol itself on hover.
+/// and highlights the symbol itself on hover. Avoiding an always-mounted `NSButton` and `.onHover`
+/// tracking area on unhovered rows dramatically reduces `NSTableView` mount work on macOS 12.
 private struct MessageDeleteButton: View {
     let messageID: Int64
     let isVisible: Bool
@@ -988,21 +988,26 @@ private struct MessageDeleteButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(role: .destructive, action: action) {
-            Image(systemName: "trash")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(isHovered ? Color.red : Color.secondary)
+        if isVisible {
+            Button(role: .destructive, action: action) {
+                Image(systemName: "trash")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(isHovered ? Color.red : Color.secondary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .onHover { hovering in
+                isHovered = hovering
+            }
+            .help(Localized.string("message.delete"))
+            .accessibilityLabel(Localized.string("message.delete"))
+            .accessibilityIdentifier("delete-message-button-\(messageID)")
+        } else {
+            Color.clear
                 .frame(width: 32, height: 32)
-                .contentShape(Rectangle())
+                .accessibilityHidden(true)
         }
-        .buttonStyle(.borderless)
-        .opacity(isVisible ? 1 : 0)
-        .onHover { hovering in
-            isHovered = hovering
-        }
-        .help(Localized.string("message.delete"))
-        .accessibilityLabel(Localized.string("message.delete"))
-        .accessibilityIdentifier("delete-message-button-\(messageID)")
     }
 }
 
@@ -1028,11 +1033,14 @@ private struct MessageRowContent: View, Equatable {
                         .font(isNew ? .headline.weight(.semibold) : .headline)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    RelativeTimeLabel(date: message.receivedAt)
+                    Text(RelativeTimeLabel.relativeString(for: message.receivedAt, relativeTo: .now, locale: locale))
+                        .accessibilityLabel(
+                            RelativeTimeLabel.accessibilityString(for: message.receivedAt, relativeTo: .now, locale: locale)
+                        )
                         .font(.caption)
                         .fixedSize(horizontal: true, vertical: false)
                 }
-                Text(MessageMarkdownParser.summaryAttributedString(from: message.body))
+                Text(MessageMarkdownParser.listRowSummaryText(from: message.body))
                     .foregroundStyle(.secondary)
                     // Reserve identical summary height for short and long messages to avoid
                     // variable-height remeasurement when the native list appends a page.

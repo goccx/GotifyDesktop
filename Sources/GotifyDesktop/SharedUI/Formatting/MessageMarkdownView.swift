@@ -201,6 +201,21 @@ enum MessageMarkdownParser {
         return rendered.isEmpty ? rawText.trimmingCharacters(in: .whitespacesAndNewlines) : rendered
     }
 
+    /// Produces a compact plain-text 2-line preview for list rows without bridging `AttributedString`
+    /// to `NSAttributedString` during `NSTableView` row height measurement on macOS 12.
+    static func listRowSummaryText(from rawText: String) -> String {
+        if isSingleLinePlainTextCandidate(rawText) {
+            return rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let collapsed = collapseBlockSyntaxForSummary(from: rawText)
+        if !containsInlineMarkdownSyntax(collapsed) {
+            return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let summaryAttr = inlineAttributedString(from: collapsed, styleCodeBackground: false)
+        let rendered = String(summaryAttr.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+        return rendered.isEmpty ? collapsed.trimmingCharacters(in: .whitespacesAndNewlines) : rendered
+    }
+
     /// Fast UTF-8 byte scan for any ASCII character that can trigger inline Markdown parsing.
     private static func containsInlineMarkdownSyntax(_ text: String) -> Bool {
         for byte in text.utf8 {

@@ -148,6 +148,10 @@ final class MessageStore: ObservableObject {
         if await pageStore.failInitialLoad(for: page, requestID: requestID) { await publish(page) }
     }
 
+    func cancelLoading(_ page: MessagePage, requestID: UUID) async {
+        if await pageStore.cancelInitialLoad(for: page, requestID: requestID) { await publish(page) }
+    }
+
     func beginLoadingNextPage(_ page: MessagePage) async -> MessageHistoryRequest? {
         // The sentinel owns loading feedback. Claiming the actor's request gate changes no
         // renderable snapshot field, so publishing here would refresh all loaded rows for nothing.
@@ -189,8 +193,27 @@ final class MessageStore: ObservableObject {
         await pageStore.failGapLoad(request)
     }
 
+    private var pendingVisibilityEvents: [(page: MessagePage, messageID: Int64, visible: Bool)] = []
+    private var visibilityFlushTask: Task<Void, Never>?
+
     func setMessageVisibility(_ messageID: Int64, visible: Bool, for page: MessagePage) async {
         await pageStore.setMessageVisibility(messageID, visible: visible, for: page)
+    }
+
+    /// Coalesces synchronous SwiftUI `.onAppear` / `.onDisappear` bursts (up to 200 callbacks when
+    /// switching 100-row lists on macOS 12) into a single actor hop while preserving exact arrival order.
+    func recordRowVisibility(_ messageID: Int64, visible: Bool, for page: MessagePage) {
+        pendingVisibilityEvents.append((page: page, messageID: messageID, visible: visible))
+        guard visibilityFlushTask == nil else { return }
+        visibilityFlushTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            let batch = self.pendingVisibilityEvents
+            self.pendingVisibilityEvents.removeAll(keepingCapacity: true)
+            self.visibilityFlushTask = nil
+            guard !batch.isEmpty else { return }
+            await self.pageStore.setMessageVisibilities(batch)
+        }
     }
 
     func consumeScrollAnchor(_ anchorID: Int64, for page: MessagePage) async {
@@ -226,6 +249,9 @@ final class MessageStore: ObservableObject {
     func discardCurrentSession() async {
         sessionID = UUID()
         sessionVersion = sessionID
+        visibilityFlushTask?.cancel()
+        visibilityFlushTask = nil
+        pendingVisibilityEvents.removeAll(keepingCapacity: true)
         await pageStore.discardSession(replacingSessionID: sessionID)
         snapshots.removeAll(keepingCapacity: true)
         applicationsByID.removeAll(keepingCapacity: true)
