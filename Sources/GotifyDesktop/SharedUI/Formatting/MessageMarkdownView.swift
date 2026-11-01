@@ -194,15 +194,18 @@ enum MessageMarkdownParser {
             let collapsed = rawText.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             return collapsed.isEmpty ? rawText.trimmingCharacters(in: .whitespacesAndNewlines) : collapsed
         }
-        let summaryAttr = summaryAttributedString(from: rawText)
-        let rendered = String(summaryAttr.characters)
+        let collapsed = collapseBlockSyntaxForSummary(from: rawText)
+        let stripped = containsInlineMarkdownSyntax(collapsed)
+            ? stripInlineMarkdownToPlainText(from: collapsed)
+            : collapsed
+        let rendered = stripped
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
         return rendered.isEmpty ? rawText.trimmingCharacters(in: .whitespacesAndNewlines) : rendered
     }
 
-    /// Produces a compact plain-text 2-line preview for list rows without bridging `AttributedString`
-    /// to `NSAttributedString` during `NSTableView` row height measurement on macOS 12.
+    /// Produces a compact plain-text 2-line preview for list rows without invoking `AttributedString(markdown:)`
+    /// or bridging `AttributedString` to `NSAttributedString` during `NSTableView` row height measurement on macOS 12.
     static func listRowSummaryText(from rawText: String) -> String {
         if isSingleLinePlainTextCandidate(rawText) {
             return rawText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -211,9 +214,50 @@ enum MessageMarkdownParser {
         if !containsInlineMarkdownSyntax(collapsed) {
             return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let summaryAttr = inlineAttributedString(from: collapsed, styleCodeBackground: false)
-        let rendered = String(summaryAttr.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+        let rendered = stripInlineMarkdownToPlainText(from: collapsed)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return rendered.isEmpty ? collapsed.trimmingCharacters(in: .whitespacesAndNewlines) : rendered
+    }
+
+    /// Single-pass plain-text stripper for inline Markdown (`[label](url)` -> `label`, removes `**`, `__`, `~~`, and `` ` ``)
+    /// so list rows and titles never invoke the CommonMark `AttributedString(markdown:)` parser on the main thread.
+    private static func stripInlineMarkdownToPlainText(from text: String) -> String {
+        let chars = Array(text)
+        let count = chars.count
+        var result = String()
+        result.reserveCapacity(count)
+
+        var i = 0
+        while i < count {
+            if chars[i] == "\\", i + 1 < count {
+                result.append(chars[i + 1])
+                i += 2
+                continue
+            }
+            if chars[i] == "`" {
+                while i < count && chars[i] == "`" { i += 1 }
+                continue
+            }
+            if (chars[i] == "*" || chars[i] == "_" || chars[i] == "~"),
+               i + 1 < count,
+               chars[i + 1] == chars[i] {
+                let marker = chars[i]
+                while i < count && chars[i] == marker { i += 1 }
+                continue
+            }
+            let isImage = chars[i] == "!" && (i + 1 < count && chars[i + 1] == "[")
+            let bracketStart = isImage ? i + 1 : i
+            if chars[bracketStart] == "[",
+               let match = matchMarkdownLink(in: chars, from: bracketStart) {
+                let label = String(chars[match.labelRange])
+                result.append(stripInlineMarkdownToPlainText(from: label))
+                i = match.nextIndex
+                continue
+            }
+            result.append(chars[i])
+            i += 1
+        }
+        return result
     }
 
     /// Fast UTF-8 byte scan for any ASCII character that can trigger inline Markdown parsing.

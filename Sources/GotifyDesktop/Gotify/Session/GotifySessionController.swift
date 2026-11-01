@@ -33,6 +33,7 @@ final class GotifySessionController {
     /// A manual page retry may wake reconnection early, but it must not overlap the in-flight connection attempt.
     private var reconnectAttemptSessionID: UUID?
     private var visiblePage: MessagePage = .all
+    private var activePageLoadTask: Task<Void, Never>?
     private var liveMessageBuffer: GotifyLiveMessageBuffer?
 
     init(messageStore: MessageStore, notifier: (any GotifyMessageNotifying)? = nil) {
@@ -71,9 +72,19 @@ final class GotifySessionController {
 
     /// Page loading is independent from the one global WebSocket: loaded pages reuse memory, idle pages fetch once.
     func loadMessages(for sourceID: Int64?) async {
-        visiblePage = sourceID.map(MessagePage.application) ?? .all
+        activePageLoadTask?.cancel()
+        let targetPage = sourceID.map(MessagePage.application) ?? .all
+        visiblePage = targetPage
         if let restClient = currentRESTClient {
-            await loadMessages(page: visiblePage, client: restClient)
+            let task = Task<Void, Never> { @MainActor [weak self] in
+                await self?.loadMessages(page: targetPage, client: restClient)
+            }
+            activePageLoadTask = task
+            await withTaskCancellationHandler {
+                _ = await task.value
+            } onCancel: {
+                task.cancel()
+            }
             return
         }
 
@@ -155,6 +166,8 @@ final class GotifySessionController {
 
     private func stopSession(clearMessages: Bool, state: MessageStore.ConnectionState) async {
         activeSession = nil
+        activePageLoadTask?.cancel()
+        activePageLoadTask = nil
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempt = 0

@@ -201,19 +201,59 @@ struct InboxView: View {
         // `CATransaction.setCompletionBlock` (which SwiftUI/AppKit overwrites on macOS 12).
         transitionID = UUID()
         pageSwitchTask = Task { @MainActor in
-            await Self.waitForNextRunLoopTurn()
+            await Self.waitForNextFrameAfterCommit()
             guard !Task.isCancelled else { return }
             readyPage = targetPage
             await serverPreferences.loadMessages(for: sourceID)
         }
     }
 
+    /// Schedules resumption on `RunLoop.main` via a 0-second timer in `.common` mode.
+    /// Unlike `DispatchQueue.main.async` (which drains in Step 2 before `kCFRunLoopBeforeWaiting`
+    /// and merges T0 + T1 into a single frame) or `CATransaction.setCompletionBlock` (which AppKit
+    /// overwrites on macOS 12), a RunLoop timer fires strictly on the next RunLoop pass after
+    /// CoreAnimation's `kCFRunLoopBeforeWaiting` observer has flushed Frame T0 to the screen.
     @MainActor
-    private static func waitForNextRunLoopTurn() async {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async {
-                continuation.resume()
+    fileprivate static func waitForNextFrameAfterCommit() async {
+        final class ContinuationBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var continuation: CheckedContinuation<Void, Never>?
+            private var timer: Timer?
+
+            func arm(_ continuation: CheckedContinuation<Void, Never>) {
+                lock.lock()
+                self.continuation = continuation
+                let scheduled = Timer(timeInterval: 0, repeats: false) { [weak self] _ in
+                    self?.resume()
+                }
+                self.timer = scheduled
+                lock.unlock()
+                RunLoop.main.add(scheduled, forMode: .common)
             }
+
+            func resume() {
+                lock.lock()
+                let pending = continuation
+                continuation = nil
+                let activeTimer = timer
+                timer = nil
+                lock.unlock()
+                activeTimer?.invalidate()
+                pending?.resume()
+            }
+        }
+
+        let box = ContinuationBox()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume()
+                } else {
+                    box.arm(continuation)
+                }
+            }
+        } onCancel: {
+            box.resume()
         }
     }
 
@@ -662,6 +702,12 @@ private struct ReadingCanvas: View {
 
 /// Uniform rows keep message density calm even when bodies vary substantially in length.
 private struct MessageListView: View {
+    /// On macOS 12, `List` (`SHostingTableViewController`) synchronously measures all items in `ForEach`
+    /// on initial mount. Mounting the visible viewport (15 rows) on Frame T1 takes `< 10ms` so the list
+    /// appears immediately and never blocks sidebar clicks; `.task` then expands to `.max` on the next
+    /// frame unless cancelled by another sidebar switch.
+    private static let initialViewportBatchSize = 15
+
     let timelineItems: [MessageTimelineItem]
     let page: MessagePage
     let unexpandedMessageCount: Int
@@ -682,9 +728,13 @@ private struct MessageListView: View {
     let selectMessage: (GotifyMessage) -> Void
     @Environment(\.locale) private var locale
     @State private var isTopBarHovered = false
+    @State private var renderedItemLimit: Int = Self.initialViewportBatchSize
     @State private var listScrollTarget = MessageListScrollTarget()
 
     var body: some View {
+        let visibleItems = renderedItemLimit < timelineItems.count
+            ? Array(timelineItems.prefix(renderedItemLimit))
+            : timelineItems
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
                 if unexpandedMessageCount > 0 || hasPendingLiveMessages {
@@ -694,7 +744,7 @@ private struct MessageListView: View {
 
                 List {
                     // `List` virtualizes rows. A gap loads only when it enters the visible range.
-                    ForEach(timelineItems) { item in
+                    ForEach(visibleItems) { item in
                         MessageTimelineListRow(
                             item: item,
                             page: page,
@@ -713,7 +763,7 @@ private struct MessageListView: View {
                     // A fixed row container matches the reference timeline's footer structure.
                     // No explicit footer ID: appending history must not anchor scrolling to the footer.
                     ZStack {
-                        if hasNextPage {
+                        if hasNextPage && renderedItemLimit >= timelineItems.count {
                             NextMessagePageSentinel(isEnabled: isPresented, loadNextPage: loadNextPage)
                         }
                     }
@@ -724,6 +774,11 @@ private struct MessageListView: View {
                     listScrollTarget.tableView = tableView
                 }
                 .accessibilityIdentifier("message-timeline-list")
+                .task(id: page) {
+                    await InboxView.waitForNextFrameAfterCommit()
+                    guard !Task.isCancelled else { return }
+                    renderedItemLimit = .max
+                }
                 // Live insertion anchors the previous top row so history does not jump;
                 // explicit top-bar reveal scrolls all the way to row 0 at the top of the feed.
                 .onChange(of: scrollAnchorID) { anchorID in
