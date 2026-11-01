@@ -248,9 +248,8 @@ struct InboxView: View {
     }
 
     /// The actor uses this transient signal only to protect the reading anchor during reclamation.
-    /// Coalesced on `@MainActor` so unmounting/mounting 100 rows on macOS 12 does not spawn 200 Tasks.
     private func setMessageVisibility(_ messageID: Int64, _ visible: Bool, for page: MessagePage) {
-        messageStore.recordRowVisibility(messageID, visible: visible, for: page)
+        Task { await messageStore.setMessageVisibility(messageID, visible: visible, for: page) }
     }
 
     private func consumeScrollAnchor(_ anchorID: Int64, for page: MessagePage) {
@@ -981,8 +980,7 @@ private struct MessageListRow: View {
 }
 
 /// Slightly larger native borderless delete icon that appears only when the row is hovered/active
-/// and highlights the symbol itself on hover. Avoiding an always-mounted `NSButton` and `.onHover`
-/// tracking area on unhovered rows dramatically reduces `NSTableView` mount work on macOS 12.
+/// and highlights the symbol itself on hover.
 private struct MessageDeleteButton: View {
     let messageID: Int64
     let isVisible: Bool
@@ -990,26 +988,21 @@ private struct MessageDeleteButton: View {
     let action: () -> Void
 
     var body: some View {
-        if isVisible {
-            Button(role: .destructive, action: action) {
-                Image(systemName: "trash")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(isHovered ? Color.red : Color.secondary)
-                    .frame(width: 32, height: 32)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .onHover { hovering in
-                isHovered = hovering
-            }
-            .help(Localized.string("message.delete"))
-            .accessibilityLabel(Localized.string("message.delete"))
-            .accessibilityIdentifier("delete-message-button-\(messageID)")
-        } else {
-            Color.clear
+        Button(role: .destructive, action: action) {
+            Image(systemName: "trash")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(isHovered ? Color.red : Color.secondary)
                 .frame(width: 32, height: 32)
-                .accessibilityHidden(true)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.borderless)
+        .opacity(isVisible ? 1 : 0)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help(Localized.string("message.delete"))
+        .accessibilityLabel(Localized.string("message.delete"))
+        .accessibilityIdentifier("delete-message-button-\(messageID)")
     }
 }
 
@@ -1027,18 +1020,19 @@ private struct MessageRowContent: View, Equatable {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if isNew { Circle().fill(.blue).frame(width: 7, height: 7) }
-                    Text(message.listTitle)
+                    Text(
+                        MessageMarkdownParser.plainTextSummary(
+                            from: message.title.isEmpty ? message.body : message.title
+                        )
+                    )
                         .font(isNew ? .headline.weight(.semibold) : .headline)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    Text(RelativeTimeLabel.relativeString(for: message.receivedAt, relativeTo: .now, locale: locale))
-                        .accessibilityLabel(
-                            RelativeTimeLabel.accessibilityString(for: message.receivedAt, relativeTo: .now, locale: locale)
-                        )
+                    RelativeTimeLabel(date: message.receivedAt)
                         .font(.caption)
                         .fixedSize(horizontal: true, vertical: false)
                 }
-                Text(message.listSummary)
+                Text(MessageMarkdownParser.summaryAttributedString(from: message.body))
                     .foregroundStyle(.secondary)
                     // Reserve identical summary height for short and long messages to avoid
                     // variable-height remeasurement when the native list appends a page.

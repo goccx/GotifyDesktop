@@ -42,27 +42,19 @@ struct GeneratedGotifyRESTClient: GotifyRESTClient {
         case let .application(id):
             try await MessageAPI.getAppMessages(id: id, limit: limit, since: since, apiConfiguration: configuration)
         }
-        // Build `GotifyMessage` summaries (`AttributedString(markdown:)`) off the main actor so
-        // first-time category loads never block UI responsiveness on macOS 12+.
-        return await Task.detached(priority: .userInitiated) {
-            GotifyMessagePage(
-                messages: response.messages.map { message in
-                    GotifyMessage(
-                        id: message.id,
-                        title: message.title ?? "",
-                        body: message.message,
-                        sourceID: message.appid,
-                        sourceName: applications[message.appid]?.name ?? String(message.appid),
-                        sourceIconURL: applications[message.appid]?.iconURL,
-                        priority: Int(message.priority ?? 0),
-                        receivedAt: message.date,
-                        url: nil
-                    )
-                },
-                next: response.paging.next,
-                nextSince: response.paging.next == nil ? nil : response.paging.since
+        return GotifyMessagePage(messages: response.messages.map { message in
+            GotifyMessage(
+                id: message.id,
+                title: message.title ?? "",
+                body: message.message,
+                sourceID: message.appid,
+                sourceName: applications[message.appid]?.name ?? String(message.appid),
+                sourceIconURL: applications[message.appid]?.iconURL,
+                priority: Int(message.priority ?? 0),
+                receivedAt: message.date,
+                url: nil
             )
-        }.value
+        }, next: response.paging.next, nextSince: response.paging.next == nil ? nil : response.paging.since)
     }
 
     func deleteMessage(id: Int64) async throws {

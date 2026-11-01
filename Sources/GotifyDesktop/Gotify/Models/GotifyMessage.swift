@@ -12,10 +12,6 @@ struct GotifyMessage: Identifiable, Hashable, Sendable {
     let priority: Int
     let receivedAt: Date
     let url: URL?
-    /// Precomputed once at message creation as plain text so list rows never re-parse Markdown or
-    /// bridge `AttributedString` to `NSAttributedString` on the main thread during switches.
-    let listTitle: String
-    let listSummary: String
 
     /// Defaults keep non-network fixtures focused on the message behavior they exercise.
     init(
@@ -38,33 +34,5 @@ struct GotifyMessage: Identifiable, Hashable, Sendable {
         self.priority = priority
         self.receivedAt = receivedAt
         self.url = url
-        self.listTitle = MessageMarkdownParser.plainTextSummary(
-            from: title.isEmpty ? body : title
-        )
-        self.listSummary = MessageMarkdownParser.listRowSummaryText(from: body)
-    }
-
-    static func == (lhs: GotifyMessage, rhs: GotifyMessage) -> Bool {
-        lhs.id == rhs.id
-            && lhs.title == rhs.title
-            && lhs.body == rhs.body
-            && lhs.sourceID == rhs.sourceID
-            && lhs.sourceName == rhs.sourceName
-            && lhs.sourceIconURL == rhs.sourceIconURL
-            && lhs.priority == rhs.priority
-            && lhs.receivedAt == rhs.receivedAt
-            && lhs.url == rhs.url
-    }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(title)
-        hasher.combine(body)
-        hasher.combine(sourceID)
-        hasher.combine(sourceName)
-        hasher.combine(sourceIconURL)
-        hasher.combine(priority)
-        hasher.combine(receivedAt)
-        hasher.combine(url)
     }
 }

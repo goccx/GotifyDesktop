@@ -19,21 +19,13 @@ struct RelativeTimeLabel: View {
     }
 
     /// Foundation owns pluralization, locale grammar, future dates, and calendar-boundary behavior.
-    static func relativeString(for date: Date, relativeTo referenceDate: Date, locale: Locale) -> String {
+    private func relativeText(referenceDate: Date) -> String {
         RelativeDateTimeFormatterCache.string(for: date, relativeTo: referenceDate, locale: locale, unitsStyle: .abbreviated)
     }
 
     /// VoiceOver receives an unabridged version instead of reading a compact unit ambiguously.
-    static func accessibilityString(for date: Date, relativeTo referenceDate: Date, locale: Locale) -> String {
-        RelativeDateTimeFormatterCache.string(for: date, relativeTo: referenceDate, locale: locale, unitsStyle: .full)
-    }
-
-    private func relativeText(referenceDate: Date) -> String {
-        Self.relativeString(for: date, relativeTo: referenceDate, locale: locale)
-    }
-
     private func accessibilityText(referenceDate: Date) -> String {
-        Self.accessibilityString(for: date, relativeTo: referenceDate, locale: locale)
+        RelativeDateTimeFormatterCache.string(for: date, relativeTo: referenceDate, locale: locale, unitsStyle: .full)
     }
 
     /// The compact label keeps the list calm; the standard macOS hover affordance exposes the exact time.
@@ -145,23 +137,16 @@ private struct RelativeTimeTimelineSchedule: TimelineSchedule {
     }
 }
 
-/// Caches `RelativeDateTimeFormatter` instances and bucketed relative strings per locale and unit style
-/// so list row rendering does not allocate or invoke ICU formatters repeatedly on every SwiftUI body pass.
+/// Caches `RelativeDateTimeFormatter` instances per locale and unit style so list row rendering
+/// does not allocate new ICU formatters on every SwiftUI body evaluation.
 private enum RelativeDateTimeFormatterCache {
-    private struct FormatterKey: Hashable {
-        let localeIdentifier: String
-        let unitsStyleRawValue: Int
-    }
-
-    private struct StringCacheKey: Hashable {
-        let deltaBucket: Int64
+    private struct Key: Hashable {
         let localeIdentifier: String
         let unitsStyleRawValue: Int
     }
 
     private static let lock = NSLock()
-    private static var formatters: [FormatterKey: RelativeDateTimeFormatter] = [:]
-    private static var cachedStrings: [StringCacheKey: String] = [:]
+    private static var formatters: [Key: RelativeDateTimeFormatter] = [:]
 
     static func string(
         for date: Date,
@@ -172,29 +157,7 @@ private enum RelativeDateTimeFormatterCache {
         lock.lock()
         defer { lock.unlock() }
 
-        let delta = date.timeIntervalSince(referenceDate)
-        let absDelta = abs(delta)
-        let sign: Int64 = delta < 0 ? -1 : 1
-        let bucketMagnitude: Int64 = switch absDelta {
-        case ..<60:
-            Int64(absDelta.rounded(.towardZero))
-        case ..<3_600:
-            60 + Int64((absDelta / 60).rounded(.towardZero))
-        case ..<86_400:
-            3_660 + Int64((absDelta / 3_600).rounded(.towardZero))
-        default:
-            100_000 + Int64((absDelta / 86_400).rounded(.towardZero))
-        }
-        let cacheKey = StringCacheKey(
-            deltaBucket: sign * bucketMagnitude,
-            localeIdentifier: locale.identifier,
-            unitsStyleRawValue: unitsStyle.rawValue
-        )
-        if let cached = cachedStrings[cacheKey] {
-            return cached
-        }
-
-        let key = FormatterKey(localeIdentifier: locale.identifier, unitsStyleRawValue: unitsStyle.rawValue)
+        let key = Key(localeIdentifier: locale.identifier, unitsStyleRawValue: unitsStyle.rawValue)
         let formatter: RelativeDateTimeFormatter
         if let existing = formatters[key] {
             formatter = existing
@@ -205,11 +168,6 @@ private enum RelativeDateTimeFormatterCache {
             formatters[key] = created
             formatter = created
         }
-        let result = formatter.localizedString(for: date, relativeTo: referenceDate)
-        if cachedStrings.count >= 1_024 {
-            cachedStrings.removeAll(keepingCapacity: true)
-        }
-        cachedStrings[cacheKey] = result
-        return result
+        return formatter.localizedString(for: date, relativeTo: referenceDate)
     }
 }

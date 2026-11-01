@@ -231,18 +231,6 @@ actor GotifyMessagePageStore {
         timelines[page] = state
     }
 
-    /// Applies a coalesced batch of row visibility changes across pages in a single actor turn.
-    func applyMessageVisibilityUpdates(_ updatesByPage: [MessagePage: [Int64: Bool]]) {
-        for (page, updates) in updatesByPage {
-            guard var state = timelines[page] else { continue }
-            for (messageID, visible) in updates {
-                state.visibleMessageIDs.removeAll { $0 == messageID }
-                if visible { state.visibleMessageIDs.insert(messageID, at: 0) }
-            }
-            timelines[page] = state
-        }
-    }
-
     func consumeScrollAnchor(_ anchorID: Int64, for page: MessagePage) -> Bool {
         guard var state = timelines[page], state.scrollAnchorID == anchorID else { return false }
         state.scrollAnchorID = nil

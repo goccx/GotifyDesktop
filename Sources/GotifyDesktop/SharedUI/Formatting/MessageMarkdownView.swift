@@ -20,9 +20,11 @@ enum MarkdownBlock: Equatable, Sendable {
 enum MessageMarkdownParser {
     /// Parses a raw Markdown document into ordered visual blocks.
     static func parseBlocks(from rawText: String) -> [MarkdownBlock] {
-        let normalized = rawText
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
+        let normalized = rawText.contains("\r")
+            ? rawText
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+            : rawText
         let lines = normalized.components(separatedBy: "\n")
 
         var blocks: [MarkdownBlock] = []
@@ -147,6 +149,10 @@ enum MessageMarkdownParser {
     /// - Non-HTTP links (such as `file://` or relative workspace paths) are unwrapped to their readable label.
     /// - CJK bold spans (`**...**`) that CommonMark's strict flanking rule skips are promoted to bold.
     static func inlineAttributedString(from rawInline: String, styleCodeBackground: Bool = true) -> AttributedString {
+        guard containsInlineMarkdownSyntax(rawInline) else {
+            return AttributedString(rawInline)
+        }
+
         let sanitized = sanitizeMarkdownLinks(in: rawInline)
         var attributed: AttributedString
         if let parsed = try? AttributedString(
@@ -160,7 +166,9 @@ enum MessageMarkdownParser {
             attributed = AttributedString(sanitized)
         }
 
-        applyRemainingBoldSpans(in: &attributed)
+        if sanitized.contains("**") {
+            applyRemainingBoldSpans(in: &attributed)
+        }
         sanitizeLinksAndStyleInlineCode(in: &attributed, styleCodeBackground: styleCodeBackground)
         return attributed
     }
@@ -169,6 +177,9 @@ enum MessageMarkdownParser {
     /// stripping block-level syntax (`###`, fences, `---`, list markers) and links while preserving inline bold & code.
     static func summaryAttributedString(from rawText: String) -> AttributedString {
         let collapsed = collapseBlockSyntaxForSummary(from: rawText)
+        guard containsInlineMarkdownSyntax(collapsed) else {
+            return AttributedString(collapsed)
+        }
         var attributed = inlineAttributedString(from: collapsed, styleCodeBackground: false)
         for run in attributed.runs where run.link != nil {
             attributed[run.range].link = nil
@@ -179,27 +190,79 @@ enum MessageMarkdownParser {
     /// Produces a clean plain-text summary (for 1-line fallback titles, dialogs, and system banners)
     /// with all Markdown block markers, `**` delimiters, backticks, and `file://` URLs removed.
     static func plainTextSummary(from rawText: String) -> String {
-        let truncatedInput = rawText.count > 600 ? String(rawText.prefix(600)) : rawText
-        let summaryAttr = summaryAttributedString(from: truncatedInput)
+        if isSingleLinePlainTextCandidate(rawText) {
+            let collapsed = rawText.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            return collapsed.isEmpty ? rawText.trimmingCharacters(in: .whitespacesAndNewlines) : collapsed
+        }
+        let summaryAttr = summaryAttributedString(from: rawText)
         let rendered = String(summaryAttr.characters)
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
         return rendered.isEmpty ? rawText.trimmingCharacters(in: .whitespacesAndNewlines) : rendered
     }
 
-    /// Produces a compact plain-text 2-line preview for `MessageRowContent` so `NSTableView` on macOS 12
-    /// uses fast `Text(String)` layout instead of bridging `AttributedString` per row.
-    static func listRowSummaryText(from rawText: String) -> String {
-        let truncatedInput = rawText.count > 600 ? String(rawText.prefix(600)) : rawText
-        let summaryAttr = summaryAttributedString(from: truncatedInput)
-        let rendered = String(summaryAttr.characters)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if rendered.isEmpty {
-            let fallback = truncatedInput.trimmingCharacters(in: .whitespacesAndNewlines)
-            return fallback.count > 240 ? String(fallback.prefix(240)) : fallback
+    /// Fast UTF-8 byte scan for any ASCII character that can trigger inline Markdown parsing.
+    private static func containsInlineMarkdownSyntax(_ text: String) -> Bool {
+        for byte in text.utf8 {
+            switch byte {
+            case UInt8(ascii: "*"),
+                 UInt8(ascii: "_"),
+                 UInt8(ascii: "`"),
+                 UInt8(ascii: "["),
+                 UInt8(ascii: "~"),
+                 UInt8(ascii: "\\"),
+                 UInt8(ascii: "<"),
+                 UInt8(ascii: "&"):
+                return true
+            default:
+                continue
+            }
         }
-        return rendered.count > 240 ? String(rendered.prefix(240)) : rendered
+        return false
+    }
+
+    /// Returns true when `text` is a single line with neither inline Markdown triggers nor leading block markers.
+    private static func isSingleLinePlainTextCandidate(_ text: String) -> Bool {
+        var sawFirstNonSpace = false
+        for byte in text.utf8 {
+            if byte == UInt8(ascii: "\n") || byte == UInt8(ascii: "\r") {
+                return false
+            }
+            if !sawFirstNonSpace {
+                if byte == UInt8(ascii: " ") || byte == UInt8(ascii: "\t") {
+                    continue
+                }
+                sawFirstNonSpace = true
+                switch byte {
+                case UInt8(ascii: "#"),
+                     UInt8(ascii: ">"),
+                     UInt8(ascii: "-"),
+                     UInt8(ascii: "*"),
+                     UInt8(ascii: "+"),
+                     UInt8(ascii: "|"),
+                     UInt8(ascii: "`"),
+                     UInt8(ascii: "~"),
+                     UInt8(ascii: "0")...UInt8(ascii: "9"):
+                    return false
+                default:
+                    break
+                }
+            }
+            switch byte {
+            case UInt8(ascii: "*"),
+                 UInt8(ascii: "_"),
+                 UInt8(ascii: "`"),
+                 UInt8(ascii: "["),
+                 UInt8(ascii: "~"),
+                 UInt8(ascii: "\\"),
+                 UInt8(ascii: "<"),
+                 UInt8(ascii: "&"):
+                return false
+            default:
+                continue
+            }
+        }
+        return true
     }
 
     // MARK: - Link Sanitization & Inline Post-Processing
@@ -207,6 +270,7 @@ enum MessageMarkdownParser {
     /// Unwraps `[label](target)` to `label` unless `target` is an external `http://` or `https://` URL,
     /// and percent-encodes valid HTTP/HTTPS URLs if needed so `AttributedString(markdown:)` never dumps raw URLs.
     static func sanitizeMarkdownLinks(in text: String) -> String {
+        guard text.utf8.contains(UInt8(ascii: "[")) else { return text }
         let chars = Array(text)
         let count = chars.count
         var result = String()
@@ -401,6 +465,9 @@ enum MessageMarkdownParser {
                 continue
             }
             let runSlice = attributed[run.range].characters
+            guard String(runSlice).contains("**") else {
+                continue
+            }
             var idx = runSlice.startIndex
             while idx < runSlice.endIndex {
                 let nextIdx = runSlice.index(after: idx)
@@ -594,7 +661,11 @@ enum MessageMarkdownParser {
     }
 
     private static func collapseBlockSyntaxForSummary(from rawText: String) -> String {
-        let blocks = parseBlocks(from: rawText)
+        if isSingleLinePlainTextCandidate(rawText) {
+            return rawText
+        }
+        let boundedInput = boundedSummaryInput(from: rawText, maxLines: 24, maxUTF8Bytes: 2_048)
+        let blocks = parseBlocks(from: boundedInput)
         var summaryLines: [String] = []
         summaryLines.reserveCapacity(min(blocks.count, 4))
 
@@ -603,13 +674,13 @@ enum MessageMarkdownParser {
             case let .heading(_, text):
                 summaryLines.append(text)
             case let .paragraph(text):
-                summaryLines.append(text)
+                summaryLines.append(firstLines(of: text, limit: 4))
             case let .unorderedListItem(_, text):
                 summaryLines.append("• \(text)")
             case let .orderedListItem(_, marker, text):
                 summaryLines.append("\(marker) \(text)")
             case let .blockquote(text):
-                summaryLines.append(text)
+                summaryLines.append(firstLines(of: text, limit: 4))
             case let .codeBlock(_, code):
                 let firstCodeLine = code
                     .split(separator: "\n", omittingEmptySubsequences: true)
@@ -632,6 +703,51 @@ enum MessageMarkdownParser {
         }
 
         return summaryLines.joined(separator: "\n")
+    }
+
+    /// Slices at most the first `maxNonEmptyLines` non-empty lines (or `maxUTF8Bytes` on a character boundary)
+    /// so 2-line list previews never tokenize or parse the tail of multi-kilobyte logs or Markdown documents.
+    private static func boundedSummaryInput(
+        from rawText: String,
+        maxLines maxNonEmptyLines: Int,
+        maxUTF8Bytes: Int
+    ) -> String {
+        guard rawText.utf8.count > 256 else { return rawText }
+        var nonEmptyLineCount = 0
+        var currentLineHasNonSpace = false
+        var byteCount = 0
+        var idx = rawText.startIndex
+        while idx < rawText.endIndex {
+            let ch = rawText[idx]
+            if ch == "\n" || ch == "\r\n" {
+                if currentLineHasNonSpace {
+                    nonEmptyLineCount += 1
+                    if nonEmptyLineCount >= maxNonEmptyLines {
+                        return String(rawText[..<idx])
+                    }
+                    currentLineHasNonSpace = false
+                }
+            } else if !currentLineHasNonSpace && !ch.isWhitespace {
+                currentLineHasNonSpace = true
+            }
+            byteCount += ch.utf8.count
+            idx = rawText.index(after: idx)
+            if byteCount >= maxUTF8Bytes {
+                return String(rawText[..<idx])
+            }
+        }
+        return rawText
+    }
+
+    private static func firstLines(of text: String, limit: Int) -> String {
+        var newlines = 0
+        for idx in text.indices where text[idx] == "\n" {
+            newlines += 1
+            if newlines >= limit {
+                return String(text[..<idx])
+            }
+        }
+        return text
     }
 }
 
