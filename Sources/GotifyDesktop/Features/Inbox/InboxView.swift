@@ -22,18 +22,21 @@ struct InboxView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // Strict Frame T0 rule: when `selection` changes (`readyPage != page`), old messages must NEVER
-        // remain on screen. Frame T0 immediately clears `timelineItems` to `[]` and shows `.loading`
-        // (`ProgressView`), and Frame T1 mounts the target category's viewport rows.
-        let page = selectedPage
-        let pageItems = messageStore.timelineItems(for: page)
-        let storeLoadState = messageStore.pageLoadState(for: page)
-        let isTransitioning = readyPage != page
+        // Strict Frame T0 rule: when `selection` changes (`readyPage != targetPage`), old messages must NEVER
+        // remain visible on screen. Frame T0 immediately hides the list layer and shows `.loading`
+        // (`ProgressView`) while keeping the underlying `NSTableView` mounted and intact; Frame T1
+        // swaps `readyPage` to `targetPage` so the reused `NSTableView` updates in-place.
+        let targetPage = selectedPage
+        let isTransitioning = readyPage != targetPage
+        let listPage = readyPage
+        let listItems = messageStore.timelineItems(for: listPage)
+        let targetItems = messageStore.timelineItems(for: targetPage)
+        let storeLoadState = messageStore.pageLoadState(for: targetPage)
         let effectiveLoadState: MessagePageLoadState = {
             if isTransitioning {
                 return .loading(transitionID)
             }
-            if storeLoadState == .idle, pageItems.isEmpty, messageStore.connectionState == .connected {
+            if storeLoadState == .idle, targetItems.isEmpty, messageStore.connectionState == .connected {
                 return .loading(transitionID)
             }
             return storeLoadState
@@ -60,26 +63,26 @@ struct InboxView: View {
             )
         } detail: {
             ReadingCanvas(
-                timelineItems: isTransitioning ? [] : pageItems,
-                page: page,
+                timelineItems: listItems,
+                page: listPage,
                 navigationTitle: navigationTitle,
                 pageLoadState: effectiveLoadState,
-                hasNextPage: messageStore.hasNextPage(for: page),
-                scrollAnchorID: messageStore.scrollAnchorID(for: page),
-                hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: page),
-                unexpandedMessageCount: messageStore.unexpandedMessageCount(for: page),
+                hasNextPage: messageStore.hasNextPage(for: listPage),
+                scrollAnchorID: messageStore.scrollAnchorID(for: listPage),
+                hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: listPage),
+                unexpandedMessageCount: messageStore.unexpandedMessageCount(for: listPage),
                 isNewMessage: { messageStore.isNewMessage($0.id, sourceID: $0.sourceID) },
                 clientToken: serverPreferences.clientToken,
                 markMessageViewed: messageStore.markMessageViewed,
-                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: page) },
+                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: listPage) },
                 retryLoading: loadSelectedPage,
-                loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: page.sourceID, gapID: gapID) },
-                loadNextPage: { try await serverPreferences.loadNextPage(for: page.sourceID) },
-                revealPendingLiveMessages: { await messageStore.revealPendingLiveMessages(for: page) },
-                setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: page) },
-                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: page) },
+                loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: listPage.sourceID, gapID: gapID) },
+                loadNextPage: { try await serverPreferences.loadNextPage(for: listPage.sourceID) },
+                revealPendingLiveMessages: { await messageStore.revealPendingLiveMessages(for: listPage) },
+                setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: listPage) },
+                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: listPage) },
                 deleteMessage: { message in pendingSingleDeleteMessage = message },
-                requestBulkDelete: { pendingBulkDeletePage = page },
+                requestBulkDelete: { pendingBulkDeletePage = listPage },
                 selectedMessage: $selectedMessage
             )
             .toolbar {
@@ -181,6 +184,8 @@ struct InboxView: View {
             handleActivatedNotification(target)
         }
         .onChange(of: messageStore.sessionVersion) { _ in
+            pageSwitchTask?.cancel()
+            readyPage = selectedPage
             selectedMessage = nil
         }
     }
@@ -204,21 +209,23 @@ struct InboxView: View {
     private func schedulePageSwitch(to targetPage: MessagePage) {
         pageSwitchTask?.cancel()
         let sourceID = targetPage.sourceID
-        let hasMessages = !messageStore.timelineItems(for: targetPage).isEmpty
+        let hasCachedMessages = !messageStore.timelineItems(for: targetPage).isEmpty
 
-        if !hasMessages {
-            readyPage = targetPage
-            Task { await serverPreferences.loadMessages(for: sourceID) }
-            return
-        }
-
-        // Frame T0 immediately unmounts the previous list (zero old-message ghosting) and shows `.loading`;
-        // Frame T1 mounts the target page's viewport rows on the very next RunLoop turn.
+        // Frame T0 immediately hides the list layer (`opacity(0)`) and displays `.loading` with zero
+        // `NSTableView` mutations. For cached pages, Frame T1 swaps `readyPage` in-place; for uncached
+        // pages, `readyPage` swaps after the REST load finishes so `NSTableView` never tears down to 0
+        // rows in between (`100 -> 0 -> 100`).
         pageSwitchTask = Task { @MainActor in
             await Self.waitForNextRunLoopTurn()
             guard !Task.isCancelled else { return }
-            readyPage = targetPage
-            await serverPreferences.loadMessages(for: sourceID)
+            if hasCachedMessages {
+                readyPage = targetPage
+                await serverPreferences.loadMessages(for: sourceID)
+            } else {
+                await serverPreferences.loadMessages(for: sourceID)
+                guard !Task.isCancelled else { return }
+                readyPage = targetPage
+            }
         }
     }
 
@@ -591,10 +598,42 @@ private struct ReadingCanvas: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let isShowingList = (pageLoadState == .loaded || pageLoadState == .idle) && !timelineItems.isEmpty
+        let isListInteractive = isShowingList && selectedMessage == nil
         ZStack {
-            // Keep the list mounted under the detail canvas. Returning therefore preserves the
-            // native List's scroll position and per-row image/timestamp lifetime.
-            Group {
+            // Keep a single persistent `MessageListView` (`NSTableView`) mounted across both detail
+            // inspection and category switches so macOS 12 never destroys its `NSHostingView` cell pool
+            // or cold-starts a new `NSTableView`. During Frame T0 `.loading`, the list is hidden (`opacity(0)`)
+            // and `ProgressView` is shown on top so old messages never linger on screen.
+            MessageListView(
+                timelineItems: timelineItems,
+                page: page,
+                unexpandedMessageCount: unexpandedMessageCount,
+                hasNextPage: hasNextPage,
+                scrollAnchorID: scrollAnchorID,
+                hasPendingLiveMessages: hasPendingLiveMessages,
+                isPresented: isListInteractive,
+                isNewMessage: isNewMessage,
+                clientToken: clientToken,
+                loadMore: loadMore,
+                loadNextPage: loadNextPage,
+                revealPendingLiveMessages: revealPendingLiveMessages,
+                setMessageVisibility: setMessageVisibility,
+                consumeScrollAnchor: consumeScrollAnchor,
+                markAllMessagesViewed: markAllMessagesViewed,
+                deleteMessage: deleteMessage,
+                requestBulkDelete: requestBulkDelete
+            ) { message in
+                markMessageViewed(message.id, message.sourceID)
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                    selectedMessage = message
+                }
+            }
+            .opacity(isListInteractive ? 1 : 0)
+            .allowsHitTesting(isListInteractive)
+            .accessibilityHidden(!isListInteractive)
+
+            if selectedMessage == nil, !isShowingList {
                 switch pageLoadState {
                 case .loading:
                     ProgressView(Localized.string("inbox.loading"))
@@ -610,46 +649,14 @@ private struct ReadingCanvas: View {
                             .accessibilityIdentifier("retry-message-page-button")
                     }
                 case .idle, .loaded:
-                    if timelineItems.isEmpty {
-                        EmptyStatePlaceholderView(
-                            title: Localized.string("inbox.empty.title"),
-                            systemImage: "bell.badge",
-                            description: Localized.string("inbox.empty.description")
-                        )
-                    } else {
-                        MessageListView(
-                            timelineItems: timelineItems,
-                            page: page,
-                            unexpandedMessageCount: unexpandedMessageCount,
-                            hasNextPage: hasNextPage,
-                            scrollAnchorID: scrollAnchorID,
-                            hasPendingLiveMessages: hasPendingLiveMessages,
-                            isPresented: selectedMessage == nil,
-                            isNewMessage: isNewMessage,
-                            clientToken: clientToken,
-                            loadMore: loadMore,
-                            loadNextPage: loadNextPage,
-                            revealPendingLiveMessages: revealPendingLiveMessages,
-                            setMessageVisibility: setMessageVisibility,
-                            consumeScrollAnchor: consumeScrollAnchor,
-                            markAllMessagesViewed: markAllMessagesViewed,
-                            deleteMessage: deleteMessage,
-                            requestBulkDelete: requestBulkDelete
-                        ) { message in
-                            markMessageViewed(message.id, message.sourceID)
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-                                selectedMessage = message
-                            }
-                        }
-                        // Only explicit source navigation starts another List lifetime. Pagination
-                        // keeps this page ID unchanged; the tail row itself never receives an ID.
-                        .id(page)
-                    }
+                    EmptyStatePlaceholderView(
+                        title: Localized.string("inbox.empty.title"),
+                        systemImage: "bell.badge",
+                        description: Localized.string("inbox.empty.description")
+                    )
                 }
             }
-            .opacity(selectedMessage == nil ? 1 : 0)
-            .allowsHitTesting(selectedMessage == nil)
-            .accessibilityHidden(selectedMessage != nil)
+
             if let selectedMessage {
                 MessageDetailView(
                     message: selectedMessage,
@@ -669,10 +676,9 @@ private struct ReadingCanvas: View {
 
 /// Uniform rows keep message density calm even when bodies vary substantially in length.
 private struct MessageListView: View {
-    /// On macOS 12, `ListCoreTableView` synchronously constructs all items passed to `ForEach` on mount.
-    /// Mounting the first 20 rows on Frame T1 fills the entire visible viewport in `< 6ms` so `.loading`
-    /// finishes immediately, then appends the remaining off-screen rows on the next RunLoop turn.
-    private static let initialViewportBatchSize = 20
+    /// Matches the uniform 3-line row height so `NSTableView` on macOS 12 uses an accurate estimated
+    /// row height (`~84pt` instead of AppKit's default `17pt`) and only instantiates the ~10 visible rows.
+    private static let estimatedRowHeight: CGFloat = 84
 
     let timelineItems: [MessageTimelineItem]
     let page: MessagePage
@@ -694,13 +700,9 @@ private struct MessageListView: View {
     let selectMessage: (GotifyMessage) -> Void
     @Environment(\.locale) private var locale
     @State private var isTopBarHovered = false
-    @State private var renderedItemLimit: Int = Self.initialViewportBatchSize
     @State private var listScrollTarget = MessageListScrollTarget()
 
     var body: some View {
-        let visibleItems = renderedItemLimit < timelineItems.count
-            ? Array(timelineItems.prefix(renderedItemLimit))
-            : timelineItems
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
                 if unexpandedMessageCount > 0 || hasPendingLiveMessages {
@@ -710,7 +712,7 @@ private struct MessageListView: View {
 
                 List {
                     // `List` virtualizes rows. A gap loads only when it enters the visible range.
-                    ForEach(visibleItems) { item in
+                    ForEach(timelineItems) { item in
                         MessageTimelineListRow(
                             item: item,
                             page: page,
@@ -729,21 +731,23 @@ private struct MessageListView: View {
                     // A fixed row container matches the reference timeline's footer structure.
                     // No explicit footer ID: appending history must not anchor scrolling to the footer.
                     ZStack {
-                        if hasNextPage && renderedItemLimit >= timelineItems.count {
+                        if hasNextPage {
                             NextMessagePageSentinel(isEnabled: isPresented, loadNextPage: loadNextPage)
+                                .id(page)
                         }
                     }
                     .compatibleHiddenListRowSeparator()
                 }
                 .listStyle(.inset)
                 .introspect(.list(style: .inset), on: .macOS(.v12, .v13, .v14, .v15, .v26)) { tableView in
+                    if tableView.rowHeight != Self.estimatedRowHeight {
+                        tableView.rowHeight = Self.estimatedRowHeight
+                    }
                     listScrollTarget.tableView = tableView
                 }
                 .accessibilityIdentifier("message-timeline-list")
-                .onAppear {
-                    DispatchQueue.main.async {
-                        renderedItemLimit = .max
-                    }
+                .onChange(of: page) { _ in
+                    listScrollTarget.scrollToTop()
                 }
                 // Live insertion anchors the previous top row so history does not jump;
                 // explicit top-bar reveal scrolls all the way to row 0 at the top of the feed.
