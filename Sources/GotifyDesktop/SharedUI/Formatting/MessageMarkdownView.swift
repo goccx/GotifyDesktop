@@ -179,12 +179,27 @@ enum MessageMarkdownParser {
     /// Produces a clean plain-text summary (for 1-line fallback titles, dialogs, and system banners)
     /// with all Markdown block markers, `**` delimiters, backticks, and `file://` URLs removed.
     static func plainTextSummary(from rawText: String) -> String {
-        let summaryAttr = summaryAttributedString(from: rawText)
+        let truncatedInput = rawText.count > 600 ? String(rawText.prefix(600)) : rawText
+        let summaryAttr = summaryAttributedString(from: truncatedInput)
         let rendered = String(summaryAttr.characters)
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return rendered.isEmpty ? rawText.trimmingCharacters(in: .whitespacesAndNewlines) : rendered
+    }
+
+    /// Produces a compact plain-text 2-line preview for `MessageRowContent` so `NSTableView` on macOS 12
+    /// uses fast `Text(String)` layout instead of bridging `AttributedString` per row.
+    static func listRowSummaryText(from rawText: String) -> String {
+        let truncatedInput = rawText.count > 600 ? String(rawText.prefix(600)) : rawText
+        let summaryAttr = summaryAttributedString(from: truncatedInput)
+        let rendered = String(summaryAttr.characters)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if rendered.isEmpty {
+            let fallback = truncatedInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            return fallback.count > 240 ? String(fallback.prefix(240)) : fallback
+        }
+        return rendered.count > 240 ? String(rendered.prefix(240)) : rendered
     }
 
     // MARK: - Link Sanitization & Inline Post-Processing

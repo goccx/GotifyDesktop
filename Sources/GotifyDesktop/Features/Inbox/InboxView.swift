@@ -12,6 +12,7 @@ struct InboxView: View {
     @EnvironmentObject private var notificationCoordinator: GotifyNotificationCoordinator
     @State private var selection: SidebarSelection? = .allMessages
     @State private var readyPage: MessagePage = .all
+    @State private var transitionID = UUID()
     @State private var pageSwitchTask: Task<Void, Never>?
     @State private var pendingSingleDeleteMessage: GotifyMessage?
     @State private var pendingBulkDeletePage: MessagePage?
@@ -21,12 +22,22 @@ struct InboxView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // `targetPage` updates the sidebar selection highlight and toolbar title on Frame T0,
-        // while `displayPage` defers swapping a populated `MessageListView` to Frame T1 without
-        // unmounting the table into an artificial loading spinner.
-        let targetPage = selectedPage
-        let displayPage = messageStore.timelineItems(for: targetPage).isEmpty ? targetPage : readyPage
-        let pageItems = messageStore.timelineItems(for: displayPage)
+        // Strict Frame T0 rule: when `selection` changes (`readyPage != page`), old messages must NEVER
+        // remain on screen. Frame T0 immediately clears `timelineItems` to `[]` and shows `.loading`
+        // (`ProgressView`), and Frame T1 mounts the target category's viewport rows.
+        let page = selectedPage
+        let pageItems = messageStore.timelineItems(for: page)
+        let storeLoadState = messageStore.pageLoadState(for: page)
+        let isTransitioning = readyPage != page
+        let effectiveLoadState: MessagePageLoadState = {
+            if isTransitioning {
+                return .loading(transitionID)
+            }
+            if storeLoadState == .idle, pageItems.isEmpty, messageStore.connectionState == .connected {
+                return .loading(transitionID)
+            }
+            return storeLoadState
+        }()
         SplitNavigationContainer {
             SidebarView(
                 selection: $selection,
@@ -49,26 +60,26 @@ struct InboxView: View {
             )
         } detail: {
             ReadingCanvas(
-                timelineItems: pageItems,
-                page: displayPage,
+                timelineItems: isTransitioning ? [] : pageItems,
+                page: page,
                 navigationTitle: navigationTitle,
-                pageLoadState: messageStore.pageLoadState(for: displayPage),
-                hasNextPage: messageStore.hasNextPage(for: displayPage),
-                scrollAnchorID: messageStore.scrollAnchorID(for: displayPage),
-                hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: displayPage),
-                unexpandedMessageCount: messageStore.unexpandedMessageCount(for: displayPage),
+                pageLoadState: effectiveLoadState,
+                hasNextPage: messageStore.hasNextPage(for: page),
+                scrollAnchorID: messageStore.scrollAnchorID(for: page),
+                hasPendingLiveMessages: messageStore.hasPendingLiveMessages(for: page),
+                unexpandedMessageCount: messageStore.unexpandedMessageCount(for: page),
                 isNewMessage: { messageStore.isNewMessage($0.id, sourceID: $0.sourceID) },
                 clientToken: serverPreferences.clientToken,
                 markMessageViewed: messageStore.markMessageViewed,
-                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: displayPage) },
+                markAllMessagesViewed: { messageStore.markAllMessagesViewed(for: page) },
                 retryLoading: loadSelectedPage,
-                loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: displayPage.sourceID, gapID: gapID) },
-                loadNextPage: { try await serverPreferences.loadNextPage(for: displayPage.sourceID) },
-                revealPendingLiveMessages: { await messageStore.revealPendingLiveMessages(for: displayPage) },
-                setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: displayPage) },
-                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: displayPage) },
+                loadMore: { gapID in try await serverPreferences.loadMoreMessages(for: page.sourceID, gapID: gapID) },
+                loadNextPage: { try await serverPreferences.loadNextPage(for: page.sourceID) },
+                revealPendingLiveMessages: { await messageStore.revealPendingLiveMessages(for: page) },
+                setMessageVisibility: { id, visible in setMessageVisibility(id, visible, for: page) },
+                consumeScrollAnchor: { id in consumeScrollAnchor(id, for: page) },
                 deleteMessage: { message in pendingSingleDeleteMessage = message },
-                requestBulkDelete: { pendingBulkDeletePage = displayPage },
+                requestBulkDelete: { pendingBulkDeletePage = page },
                 selectedMessage: $selectedMessage
             )
             .toolbar {
@@ -201,9 +212,8 @@ struct InboxView: View {
             return
         }
 
-        // Frame T0 commits the sidebar selection highlight and window title immediately while keeping
-        // the current list mounted; Frame T1 swaps `readyPage` directly to `targetPage` without
-        // flashing a loading indicator for already-loaded timelines.
+        // Frame T0 immediately unmounts the previous list (zero old-message ghosting) and shows `.loading`;
+        // Frame T1 mounts the target page's viewport rows on the very next RunLoop turn.
         pageSwitchTask = Task { @MainActor in
             await Self.waitForNextRunLoopTurn()
             guard !Task.isCancelled else { return }
@@ -250,8 +260,9 @@ struct InboxView: View {
     }
 
     /// The actor uses this transient signal only to protect the reading anchor during reclamation.
+    /// Coalesced on `@MainActor` so unmounting/mounting 100 rows on macOS 12 does not spawn 200 Tasks.
     private func setMessageVisibility(_ messageID: Int64, _ visible: Bool, for page: MessagePage) {
-        Task { await messageStore.setMessageVisibility(messageID, visible: visible, for: page) }
+        messageStore.recordRowVisibility(messageID, visible: visible, for: page)
     }
 
     private func consumeScrollAnchor(_ anchorID: Int64, for page: MessagePage) {
@@ -658,6 +669,11 @@ private struct ReadingCanvas: View {
 
 /// Uniform rows keep message density calm even when bodies vary substantially in length.
 private struct MessageListView: View {
+    /// On macOS 12, `ListCoreTableView` synchronously constructs all items passed to `ForEach` on mount.
+    /// Mounting the first 20 rows on Frame T1 fills the entire visible viewport in `< 6ms` so `.loading`
+    /// finishes immediately, then appends the remaining off-screen rows on the next RunLoop turn.
+    private static let initialViewportBatchSize = 20
+
     let timelineItems: [MessageTimelineItem]
     let page: MessagePage
     let unexpandedMessageCount: Int
@@ -678,9 +694,13 @@ private struct MessageListView: View {
     let selectMessage: (GotifyMessage) -> Void
     @Environment(\.locale) private var locale
     @State private var isTopBarHovered = false
+    @State private var renderedItemLimit: Int = Self.initialViewportBatchSize
     @State private var listScrollTarget = MessageListScrollTarget()
 
     var body: some View {
+        let visibleItems = renderedItemLimit < timelineItems.count
+            ? Array(timelineItems.prefix(renderedItemLimit))
+            : timelineItems
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
                 if unexpandedMessageCount > 0 || hasPendingLiveMessages {
@@ -690,7 +710,7 @@ private struct MessageListView: View {
 
                 List {
                     // `List` virtualizes rows. A gap loads only when it enters the visible range.
-                    ForEach(timelineItems) { item in
+                    ForEach(visibleItems) { item in
                         MessageTimelineListRow(
                             item: item,
                             page: page,
@@ -709,7 +729,7 @@ private struct MessageListView: View {
                     // A fixed row container matches the reference timeline's footer structure.
                     // No explicit footer ID: appending history must not anchor scrolling to the footer.
                     ZStack {
-                        if hasNextPage {
+                        if hasNextPage && renderedItemLimit >= timelineItems.count {
                             NextMessagePageSentinel(isEnabled: isPresented, loadNextPage: loadNextPage)
                         }
                     }
@@ -720,6 +740,11 @@ private struct MessageListView: View {
                     listScrollTarget.tableView = tableView
                 }
                 .accessibilityIdentifier("message-timeline-list")
+                .onAppear {
+                    DispatchQueue.main.async {
+                        renderedItemLimit = .max
+                    }
+                }
                 // Live insertion anchors the previous top row so history does not jump;
                 // explicit top-bar reveal scrolls all the way to row 0 at the top of the feed.
                 .onChange(of: scrollAnchorID) { anchorID in
@@ -1025,7 +1050,10 @@ private struct MessageRowContent: View, Equatable {
                         .font(isNew ? .headline.weight(.semibold) : .headline)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    RelativeTimeLabel(date: message.receivedAt)
+                    Text(RelativeTimeLabel.relativeString(for: message.receivedAt, relativeTo: .now, locale: locale))
+                        .accessibilityLabel(
+                            RelativeTimeLabel.accessibilityString(for: message.receivedAt, relativeTo: .now, locale: locale)
+                        )
                         .font(.caption)
                         .fixedSize(horizontal: true, vertical: false)
                 }
@@ -1056,22 +1084,27 @@ private struct GotifyApplicationIcon: View {
     var body: some View {
         let request = authenticatedRequest
         Group {
-            if let request, let cached = GotifyIconPipeline.pipeline.cache[request] {
-                Image(nsImage: cached.image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                LazyImage(request: request) { state in
-                    if let image = state.image {
-                        image.resizable().scaledToFill()
-                    } else if let request, let cached = GotifyIconPipeline.pipeline.cache[request] {
-                        Image(nsImage: cached.image).resizable().scaledToFill()
-                    } else {
-                        Image(systemName: "app.fill").foregroundStyle(.secondary)
+            if let request {
+                if let cached = GotifyIconPipeline.pipeline.cache[request] {
+                    Image(nsImage: cached.image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    LazyImage(request: request) { state in
+                        if let image = state.image {
+                            image.resizable().scaledToFill()
+                        } else if let cached = GotifyIconPipeline.pipeline.cache[request] {
+                            Image(nsImage: cached.image).resizable().scaledToFill()
+                        } else {
+                            Image(systemName: "app.fill").foregroundStyle(.secondary)
+                        }
                     }
+                    .pipeline(GotifyIconPipeline.pipeline)
+                    .onDisappear(.lowerPriority)
                 }
-                .pipeline(GotifyIconPipeline.pipeline)
-                .onDisappear(.lowerPriority)
+            } else {
+                Image(systemName: "app.fill")
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(width: size, height: size)

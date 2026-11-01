@@ -12,9 +12,10 @@ struct GotifyMessage: Identifiable, Hashable, Sendable {
     let priority: Int
     let receivedAt: Date
     let url: URL?
-    /// Precomputed once at message creation so list rows never re-parse Markdown on the main thread during switches.
+    /// Precomputed once at message creation as plain text so list rows never re-parse Markdown or
+    /// bridge `AttributedString` to `NSAttributedString` on the main thread during switches.
     let listTitle: String
-    let listSummary: AttributedString
+    let listSummary: String
 
     /// Defaults keep non-network fixtures focused on the message behavior they exercise.
     init(
@@ -40,7 +41,7 @@ struct GotifyMessage: Identifiable, Hashable, Sendable {
         self.listTitle = MessageMarkdownParser.plainTextSummary(
             from: title.isEmpty ? body : title
         )
-        self.listSummary = MessageMarkdownParser.summaryAttributedString(from: body)
+        self.listSummary = MessageMarkdownParser.listRowSummaryText(from: body)
     }
 
     static func == (lhs: GotifyMessage, rhs: GotifyMessage) -> Bool {
