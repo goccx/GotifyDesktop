@@ -215,6 +215,7 @@ final class MenuBarStatusController: NSObject, ObservableObject, NSMenuDelegate 
     private let appTitleItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let connectionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let openMainWindowItem = NSMenuItem(title: "", action: #selector(handleOpenMainWindow), keyEquivalent: "")
+    private let markAllReadItem = NSMenuItem(title: "", action: #selector(handleMarkAllRead), keyEquivalent: "")
     private let quitItem = NSMenuItem(title: "", action: #selector(handleQuit), keyEquivalent: "")
     private var cancellables = Set<AnyCancellable>()
     private weak var messageStore: MessageStore?
@@ -241,6 +242,8 @@ final class MenuBarStatusController: NSObject, ObservableObject, NSMenuDelegate 
         connectionItem.isEnabled = false
         openMainWindowItem.target = self
         openMainWindowItem.setAccessibilityIdentifier("menu-open-app-button")
+        markAllReadItem.target = self
+        markAllReadItem.setAccessibilityIdentifier("menu-mark-all-read-button")
         quitItem.target = self
         quitItem.setAccessibilityIdentifier("menu-quit-app-button")
 
@@ -249,6 +252,7 @@ final class MenuBarStatusController: NSObject, ObservableObject, NSMenuDelegate 
         menu.addItem(connectionItem)
         menu.addItem(.separator())
         menu.addItem(openMainWindowItem)
+        menu.addItem(markAllReadItem)
         menu.addItem(.separator())
         menu.addItem(quitItem)
         item.menu = menu
@@ -298,6 +302,7 @@ final class MenuBarStatusController: NSObject, ObservableObject, NSMenuDelegate 
         appTitleItem.title = Localized.string("app.name")
         connectionItem.title = connectionText(for: messageStore.connectionState)
         openMainWindowItem.title = Localized.string("menu.openMainWindow")
+        markAllReadItem.title = Localized.string("message.markAllRead")
         quitItem.title = Localized.string("menu.quit")
     }
 
@@ -312,6 +317,10 @@ final class MenuBarStatusController: NSObject, ObservableObject, NSMenuDelegate 
 
     @objc private func handleOpenMainWindow() {
         AppWindowCoordinator.shared.openMainWindow()
+    }
+
+    @objc private func handleMarkAllRead() {
+        messageStore?.markAllMessagesViewed(for: .all)
     }
 
     @objc private func handleQuit() {
